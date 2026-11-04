@@ -208,6 +208,52 @@ body{{height:130px;background:#161b1c}}
 <div class="ban"><div class="mark" style="gap:18px">{logo(62)}<div><div class="name">Elemental</div><div class="tagline">{TAG}</div></div></div>
 <div class="code">Add-on code <b>{CODE}</b></div></div>""")
 
+# 05: every theme as a tile, light half and dark half, plus a "more on the way" tile
+tspec = importlib.util.spec_from_file_location("themes", os.path.join(ADDON, "themes.py"))
+TH = importlib.util.module_from_spec(tspec); tspec.loader.exec_module(TH)
+import random
+
+
+def tile(key, t):
+    rnd = random.Random(key)
+    lv = [0 if rnd.random() < .12 else rnd.random() for _ in range(14 * 5)]
+    cells = []
+    for i, v in enumerate(lv):
+        col = i % 14
+        night = col >= 7
+        pal = t["dark" if night else "light"]
+        c = pal["empty"] if v == 0 else TH.glow(pal["base"], v, night)
+        cells.append(f'<i style="background:{c}"></i>')
+    ph = t.get("photo")
+    bg = (f"background:url('file://{ADDON}/builtin_backgrounds/{ph}.webp') center/cover" if ph else
+          f"background:linear-gradient(90deg,{t['light']['empty']} 50%,{t['dark']['empty']} 50%)")
+    glass = ('<div class="gl" style="left:0;background:rgba(255,255,255,.62)"></div>'
+             '<div class="gl" style="right:0;background:rgba(10,12,12,.55)"></div>') if ph else ""
+    return (f'<div class="tile" style="{bg}">{glass}<div class="mini">{"".join(cells)}</div>'
+            f'<div class="nm">{t["name"]}{"<span>photo</span>" if ph else ""}</div></div>')
+
+
+tiles = "".join(tile(k, t) for k, t in TH.THEMES.items())
+tiles += '<div class="tile more"><div class="plus">+</div><div>More on the way</div></div>'
+pages["05-themes"] = (1300, 800, f"""<style>{BASE}
+.mark{{position:absolute;left:40px;top:32px;font-size:17px;color:#e8e8ea}}
+.head{{text-align:center;padding-top:46px}}h1{{font-size:42px;font-weight:700;letter-spacing:-.5px;margin:0}}
+.sub{{font-size:18px;color:#a1a1aa;margin:10px 0 0}}
+.grid{{position:absolute;left:50px;right:50px;top:176px;display:grid;grid-template-columns:repeat(5,1fr);gap:16px}}
+.tile{{position:relative;height:136px;border-radius:14px;overflow:hidden;box-shadow:0 14px 30px rgba(0,0,0,.45),0 0 0 1px rgba(255,255,255,.08)}}
+.gl{{position:absolute;top:0;bottom:0;width:50%}}
+.mini{{position:absolute;left:14px;right:14px;top:14px;display:grid;grid-template-columns:repeat(14,1fr);gap:4px}}
+.mini i{{display:block;aspect-ratio:1;border-radius:3px}}
+.nm{{position:absolute;left:0;right:0;bottom:0;padding:7px 12px;font-size:13px;font-weight:600;color:#fff;
+ background:rgba(0,0,0,.55);display:flex;justify-content:space-between;align-items:center}}
+.nm span{{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:{TEAL}}}
+.more{{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;background:rgba(255,255,255,.03);
+ box-shadow:none;border:2px dashed rgba(111,209,192,.45);color:#c9d3d1;font-size:15px;font-weight:600}}
+.plus{{font-size:36px;font-weight:300;color:{TEAL};line-height:1}}</style>
+<div class="mark">{logo(26)}Elemental</div>
+<div class="head"><h1>19 themes, and counting</h1><div class="sub">Each one in light and dark. Photo themes come with a matching background, and more themes are on the way.</div></div>
+<div class="grid">{tiles}</div>""")
+
 os.makedirs(os.path.join(HERE, "html"), exist_ok=True)
 with open(os.path.join(HERE, "list.txt"), "w") as lst:
     for name, (w, h, body) in pages.items():

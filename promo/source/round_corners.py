@@ -17,3 +17,11 @@ for f in sorted(os.listdir(SRC)):
     path = QPainterPath(); path.addRoundedRect(QRectF(0, 0, w, h), r, r); p.setClipPath(path)
     p.drawImage(0, 0, im); p.end()
     out.save(os.path.join(OUT, f))
+
+# AnkiWeb strips alignment, so the description's screenshots are centered by padding:
+# each Rounded poster on a white canvas 1/0.8 as wide, shown at width 100% (looks 80%, centered).
+AW = os.path.join(SRC, "AnkiWeb"); os.makedirs(AW, exist_ok=True)
+for n in ["01-at-a-glance", "04-review-pill", "09-day-details", "03-time-left", "02-six-views", "05-themes", "06-card-browser", "07-settings"]:
+    im = QImage(os.path.join(OUT, n + ".png")); W = round(im.width() / 0.8)
+    pad = QImage(W, im.height(), QImage.Format.Format_RGB32); pad.fill(QColor("#ffffff"))
+    p = QPainter(pad); p.drawImage((W - im.width()) // 2, 0, im); p.end(); pad.save(os.path.join(AW, n + ".png"))
