@@ -122,3 +122,7 @@ See every past update in **Settings → Version History**.
 - `addon/`: the add-on source, exactly as it ships in the package
 - `releases/`: the installable `.ankiaddon` file
 - `promo/`: posters and banners (`promo/Rounded/` has white rounded corners for the web), plus the scripts that made them in `promo/source/`
+
+## License
+
+The code is under the [MIT License](LICENSE). The background photos in `addon/builtin_backgrounds/` are by their photographers and used under the [Unsplash License](https://unsplash.com/license); see [CREDITS.txt](addon/builtin_backgrounds/CREDITS.txt).
