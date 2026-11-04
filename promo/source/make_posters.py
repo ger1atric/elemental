@@ -282,6 +282,20 @@ pages["17-weak-spots"] = (1300, 800, f"""<style>{BASE}
 {png("stats_remembered.png", 396, 224, 0.94)}
 </div>""")
 
+# 06: the card browser with the user's own look (Darkest theme, no state symbols)
+BW = 1040
+pages["06-card-browser"] = (1300, 800, f"""<style>{BASE}
+.mark{{position:absolute;left:40px;top:32px;font-size:17px;color:#e8e8ea}}
+.head{{text-align:center;padding-top:46px}}h1{{font-size:42px;font-weight:700;letter-spacing:-.5px;margin:0}}
+.sub{{font-size:18px;color:#a1a1aa;margin:10px 0 0}}
+.st{{position:absolute;left:0;right:0;top:250px;display:flex;flex-direction:column;align-items:center;gap:30px}}
+.keys{{display:flex;gap:12px}}.keys span{{font-size:14px;font-weight:600;color:#d4d8d7;padding:8px 14px;border-radius:10px;
+ background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1)}}</style>
+<div class="mark">{logo(26)}Elemental</div>
+<div class="head"><h1>A clearer card browser</h1><div class="sub">Clozes colored by number, and suspended, buried, marked and flagged cards easy to spot.</div></div>
+<div class="st">{png("browser_mine_crop.png", 2348 / 2.257, 794 / 2.257, 1.0, "border-radius:12px")}
+<div class="keys"><span>Colored clozes</span><span>Tinted card states</span><span>Short tags</span><span>Your own colors</span></div></div>""")
+
 os.makedirs(os.path.join(HERE, "html"), exist_ok=True)
 with open(os.path.join(HERE, "list.txt"), "w") as lst:
     for name, (w, h, body) in pages.items():
