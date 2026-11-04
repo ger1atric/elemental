@@ -1,0 +1,90 @@
+<script>
+
+/* --- BEAUTIFY TEXT DASHES V12 (Smart spacing fixed) --- */
+(function () {
+  var targets = ["#extra", "#text", ".cloze", "#lecture", "#notes"];
+
+  var bulletDetect = /^((?:<[^>]*>)*)(?:&nbsp;|\s)*-((?:<[^>]*>)*(?:&nbsp;|\s)+)([\s\S]*)/i;
+  var numberedDetect = /^((?:<[^>]*>)*)(\d+)\.\s+([\s\S]*)/i;
+
+  var hasBullet = /(?:^|<br\s*\/?>|<\/?(?:div|p)[^>]*>)(?:&nbsp;|\s)*-(?:&nbsp;|\s)/i;
+  var hasNumbered = /(?:^|<br\s*\/?>|<\/?(?:div|p)[^>]*>)(?:&nbsp;|\s)*\d+\.\s+\S/i;
+
+  targets.forEach(function (selector) {
+    document.querySelectorAll(selector).forEach(function (el) {
+      if (!el) return;
+
+      var html = el.innerHTML;
+      if (!hasBullet.test(html) && !hasNumbered.test(html)) return;
+
+      html = html.replace(/<\/(?:div|p)>\s*<(?:div|p)[^>]*>/gi, "<br>");
+      html = html.replace(/<(?:div|p)[^>]*>/gi, "<br>");
+      html = html.replace(/<\/(?:div|p)[^>]*>/gi, "");
+      html = html.replace(/(\S)(\d+\.\s)/g, "$1<br>$2");
+
+      var lines = html.split(/<br\s*\/?>/gi);
+
+      var classified = lines.map(function (line) {
+        var clean = line
+          .replace(/^(?:&nbsp;|\s|\n|\r)+/, "")
+          .replace(/(?:&nbsp;|\s|\n|\r)+$/, "");
+        if (!clean) return { type: "blank", clean: clean };
+        if (clean.match(bulletDetect)) return { type: "bullet", clean: clean };
+        if (clean.match(numberedDetect)) return { type: "numbered", clean: clean };
+        return { type: "text", clean: clean };
+      });
+
+      var rebuilt = [];
+      var lastInsertedWasSpacer = false;
+
+      for (var i = 0; i < classified.length; i++) {
+        var cur = classified[i];
+
+        if (cur.type === "blank") {
+          // ✅ Find nearest non-blank lines on each side
+          var prevNonBlank = null;
+          for (var j = i - 1; j >= 0; j--) {
+            if (classified[j].type !== "blank") { prevNonBlank = classified[j]; break; }
+          }
+          var nextNonBlank = null;
+          for (var k = i + 1; k < classified.length; k++) {
+            if (classified[k].type !== "blank") { nextNonBlank = classified[k]; break; }
+          }
+
+          var prevIsBullet = prevNonBlank && (prevNonBlank.type === "bullet" || prevNonBlank.type === "numbered");
+          var nextIsBullet = nextNonBlank && (nextNonBlank.type === "bullet" || nextNonBlank.type === "numbered");
+
+          // ✅ Suppress spacer between two bullets, and collapse multiple blanks into one
+          if (!(prevIsBullet && nextIsBullet) && !lastInsertedWasSpacer) {
+            rebuilt.push("<div class='bullet-spacer'></div>");
+            lastInsertedWasSpacer = true;
+          }
+          continue;
+        }
+
+        lastInsertedWasSpacer = false;
+
+        if (cur.type === "bullet") {
+          var m = cur.clean.match(bulletDetect);
+          rebuilt.push(
+            "<div class='bullet-line'><span class='fake-bullet'>\u2022</span>\u00a0" + m[3] + "</div>"
+          );
+          continue;
+        }
+
+        if (cur.type === "numbered") {
+          var n = cur.clean.match(numberedDetect);
+          rebuilt.push(
+            "<div class='bullet-line'><span class='fake-bullet'>" + n[2] + ".</span>\u00a0" + n[3] + "</div>"
+          );
+          continue;
+        }
+
+        rebuilt.push("<div>" + cur.clean + "</div>");
+      }
+
+      el.innerHTML = rebuilt.join("");
+    });
+  });
+})();
+</script>

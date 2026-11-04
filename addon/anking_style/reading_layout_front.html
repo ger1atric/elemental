@@ -1,0 +1,191 @@
+<!-- READING LAYOUT -->
+<script>
+// AnKing's tag toggle only reads the inline style, so with tags hidden in
+// Styling the first press of the shortcut did nothing
+window.showtags = function () {
+  var t = document.getElementById("tags-container");
+  if (t) t.style.display = getComputedStyle(t).display === "none" ? "block" : "none";
+};
+// Alignment, decided line by line (a line = what sits between line breaks).
+// Text stays left-aligned, except:
+//  - a run of 3+ short lines is centered together (a flowchart like
+//    "C8-T1 / ↓ / median n.", or a stacked list of answers)
+//  - a line that is only a cloze (an answer under its question) is centered
+//  - a cloze that wraps onto the last line of a long sentence by itself
+//  - an image on a line of its own
+// Lists, tables, images inside text and dash bullets are never moved. Waits a frame so
+// bullets and brand names are in place.
+requestAnimationFrame(function () {
+    var BLOCK = /^(block|list-item|table|flex|grid)$/;
+  var INLINE_BOX = /^inline-(block|flex|grid|table)$/;  // e.g. AnKing's .mnemonics box
+  var KEEP_AS_IS = "ul, ol, table, .bullet-line, .bullet-spacer, .mnemonics";
+  var NESTED_BLOCKS = "div, p, li, ul, ol, table";
+  var MEDIA = "img, svg, table, video";
+  var ONLY_PUNCTUATION = /^[\s.,;:!?)\]]*$/;
+
+  function isBlock(node) {
+    return node.nodeType === 1 && BLOCK.test(getComputedStyle(node).display);
+  }
+
+  function hasContent(node) {
+    if (node.nodeType === 3) return /\S/.test(node.nodeValue);
+    if (node.nodeType !== 1) return false;
+    return node.matches(MEDIA) || /\S/.test(node.textContent) || !!node.querySelector(MEDIA);
+  }
+
+  function textNodes(node) {
+    if (node.nodeType === 3) return [node];
+    var list = [];
+    var walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    for (var t = walker.nextNode(); t; t = walker.nextNode()) list.push(t);
+    return list;
+  }
+
+  function isVisible(textNode) {
+    return textNode.parentElement && textNode.parentElement.getClientRects().length > 0;
+  }
+
+  function clozesIn(line) {
+    var found = [];
+    line.nodes.forEach(function (node) {
+      if (node.nodeType !== 1) return;
+      if (node.matches(".cloze")) found.push(node);
+      else found.push.apply(found, node.querySelectorAll(".cloze"));
+    });
+    return found;
+  }
+
+  // Split a container into lines: inline content ended by a <br> or a block.
+  // Blocks are split into lines of their own; lists, tables and bullets stay whole.
+  function collectLines(container, lines) {
+    var group = [];
+    function flush(br) {
+      if (group.some(hasContent)) lines.push({ nodes: group, container: container, br: br });
+      group = [];
+    }
+    Array.prototype.slice.call(container.childNodes).forEach(function (node) {
+      if (node.nodeType === 1 && node.tagName === "BR") return flush(node);
+      if (node.nodeType === 1 && (INLINE_BOX.test(getComputedStyle(node).display) || node.matches(KEEP_AS_IS))) {
+        flush(null);
+        return lines.push({ nodes: [node], container: container, keep: true });
+      }
+      if (!isBlock(node)) return group.push(node);
+      flush(null);
+      if (node.matches(KEEP_AS_IS)) lines.push({ nodes: [node], container: container, keep: true });
+      else collectLines(node, lines);
+    });
+    flush(null);
+  }
+
+  function describe(line, tolerance) {
+    var range = document.createRange();
+    range.setStartBefore(line.nodes[0]);
+    range.setEndAfter(line.nodes[line.nodes.length - 1]);
+    var tops = [];
+    Array.prototype.forEach.call(range.getClientRects(), function (r) {
+      if (r.height && !tops.some(function (t) { return Math.abs(t - r.top) < tolerance; })) tops.push(r.top);
+    });
+    var words = 0, outside = "";
+    line.nodes.forEach(function (node) {
+      textNodes(node).forEach(function (t) {
+        if (!isVisible(t)) return;
+        words += (t.nodeValue.match(/\S+/g) || []).length;
+        if (!t.parentElement.closest(".cloze")) outside += t.nodeValue;
+      });
+    });
+    // Images inside a cloze (an image answer) don't count; others keep the line as is
+    var media = line.keep || line.nodes.some(function (n) {
+      if (n.nodeType !== 1) return false;
+      var found = n.matches(MEDIA) ? [n] : Array.prototype.slice.call(n.querySelectorAll(MEDIA));
+      return found.some(function (el) { return !el.closest(".cloze"); });
+    });
+    var lone = !media && clozesIn(line).length > 0 && ONLY_PUNCTUATION.test(outside);
+    line.empty = tops.length === 0;
+    line.lone = lone;
+    line.short = !media && (lone || words <= 6 || (tops.length === 1 && words <= 10));
+    line.media = media;
+    line.imageOnly = media && !line.keep && words === 0;
+  }
+
+  function center(root, line) {
+    var container = line.container;
+    var onlyThisLine = Array.prototype.every.call(container.childNodes, function (n) {
+      return line.nodes.indexOf(n) !== -1 || n === line.br || !hasContent(n);
+    });
+    if (onlyThisLine) {
+      container.classList.add("centered-line");
+      return;
+    }
+    var wrap = document.createElement("div");
+    wrap.className = "centered-line";
+    container.insertBefore(wrap, line.nodes[0]);
+    line.nodes.forEach(function (n) { wrap.appendChild(n); });
+    if (line.br) line.br.remove();  // the new block already ends the line
+  }
+
+  // In a long sentence, center the final cloze if it wrapped onto a line by itself
+    function centerTrailingCloze(line) {
+    var nested = line.nodes.some(function (n) { return n.nodeType === 1 && n.querySelector(NESTED_BLOCKS); });
+    if (nested) return;  // not a sentence: it holds lines of its own
+    var clozes = clozesIn(line);
+    var cloze = clozes[clozes.length - 1];
+    if (!cloze || cloze.getClientRects().length !== 1) return;
+    var clozeRect = cloze.getBoundingClientRect();
+    var range = document.createRange();
+    var punctuation = null;
+    var ok = line.nodes.every(function (node) {
+      return textNodes(node).every(function (t) {
+        if (!isVisible(t) || cloze.contains(t)) return true;
+        var after = cloze.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING;
+        var word = /\S+/g, m;
+        while ((m = word.exec(t.nodeValue))) {
+          if (after) {
+            if (!ONLY_PUNCTUATION.test(m[0]) || t !== cloze.nextSibling || m.index !== 0) return false;
+            punctuation = { node: t, length: m[0].length };
+            continue;
+          }
+          range.setStart(t, m.index);
+          range.setEnd(t, m.index + m[0].length);
+          var r = range.getBoundingClientRect();
+          if (r.bottom > clozeRect.top + 2) return false;  // shares the cloze's line
+        }
+        return true;
+      });
+    });
+    if (!ok) return;
+    var wrap = document.createElement("span");
+    wrap.className = "lone-cloze";
+    cloze.parentNode.insertBefore(wrap, cloze);
+    wrap.appendChild(cloze);
+    if (punctuation) {
+      punctuation.node.splitText(punctuation.length);
+      wrap.appendChild(punctuation.node);
+    }
+    if (line.br) line.br.remove();  // the centered cloze already ends the line
+  }
+
+  document.querySelectorAll("#text").forEach(function (root) {
+    if (!root.offsetHeight) return;  // the copy hidden on this platform
+    var tolerance = parseFloat(getComputedStyle(root).fontSize) / 2;
+    var lines = [];
+    collectLines(root, lines);
+    lines.forEach(function (line) { describe(line, tolerance); });
+
+    var run = [];
+    function closeRun() {
+      run.forEach(function (l) {
+        if (run.length >= 3 || l.lone) center(root, l);
+      });
+      run = [];
+    }
+    lines.forEach(function (line) {
+      if (line.empty) return;
+      if (line.short) return run.push(line);
+      closeRun();
+      if (line.imageOnly) center(root, line);
+      else if (!line.media) centerTrailingCloze(line);
+    });
+    closeRun();
+  });
+});
+</script>

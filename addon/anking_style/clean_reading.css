@@ -1,0 +1,452 @@
+/* ================================================================
+   CLEAN READING THEME (light + dark)
+   Replaces the old "Matte Liquid Glass" layers (they were pasted
+   twice). Every color and size lives in the variables below.
+   ================================================================ */
+
+/* --- 1. TOKENS ------------------------------------------------- */
+.card {
+  --size: 36px;            /* main text size on desktop */
+  --column: 760px;         /* max width of the reading column */
+
+  --bg: #fbfbfd;
+  --ink: #1d1d1f;
+  --ink-2: #3a3a3c;        /* Extra + hint text */
+  --muted: #86868b;
+  --rule: rgba(0, 0, 0, 0.09);
+
+  --cloze: #0a6cff;
+  --cloze-tint: rgba(10, 108, 255, 0.06);
+  --obo: #1f9d55;          /* one-by-one clozes */
+  --obo-tint: rgba(31, 157, 85, 0.07);
+  --bold: currentColor;
+  --bullet: #5e5ce6;
+  --danger: #d93025;
+
+  --panel: #ffffff;
+  --panel-border: rgba(0, 0, 0, 0.07);
+  --panel-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.05);
+
+  --btn-bg: rgba(0, 0, 0, 0.04);
+  --btn-border: rgba(0, 0, 0, 0.08);
+  --btn-ink: #3a3a3c;
+}
+
+.card.nightMode,
+.card.night_mode,
+.night_mode .card,
+.nightMode .card {
+  --bg: #121212;
+  --ink: #f5f5f7;
+  --ink-2: #d1d1d6;
+  --muted: #8e8e93;
+  --rule: rgba(255, 255, 255, 0.10);
+
+  --cloze: #0a84ff;
+  --cloze-tint: rgba(10, 132, 255, 0.09);
+  --obo: #32d74b;
+  --obo-tint: rgba(50, 215, 75, 0.08);
+  --bold: #ebdcb2;         /* champagne bold */
+  --bullet: #7d7aff;
+  --danger: #ff6961;
+
+  --panel: #1c1c1e;
+  --panel-border: rgba(255, 255, 255, 0.06);
+  --panel-shadow: none;
+
+  --btn-bg: rgba(255, 255, 255, 0.06);
+  --btn-border: rgba(255, 255, 255, 0.08);
+  --btn-ink: #c7c7cc;
+}
+
+/* Phones: smaller text, pure black in night mode (OLED) */
+.mobile .card { --size: 22px; }
+.mobile .card.nightMode,
+.mobile .card.night_mode,
+.mobile.night_mode .card {
+  --bg: #000000;
+  --panel: #141416;
+}
+
+/* --- 2. CANVAS ------------------------------------------------- */
+.card,
+.card.nightMode,
+.card.night_mode,
+.night_mode .card {
+  background-color: var(--bg) !important;
+  color: var(--ink) !important;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, sans-serif !important;
+  font-size: var(--size) !important;
+  line-height: 1.5 !important;
+  letter-spacing: -0.01em;
+  max-width: 880px !important;
+  margin: 0 auto !important;
+  padding: 6vh 28px 96px !important;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+}
+
+.mobile .card {
+  padding: 22px 26px 120px !important;
+}
+
+/* --- 3. THE CARD TEXT ------------------------------------------ */
+/* Centered block that shrinks to short text; long text wraps left-aligned */
+#text {
+  width: fit-content;
+  max-width: min(var(--column), 100%);
+  margin: 0 auto;
+  text-align: left;
+  text-wrap: pretty;
+}
+
+/* Stacked cards (3+ short lines, flagged by the templates) are fully centered */
+/* Alignment flags set by the templates: runs of short lines (flowcharts,
+   a question with its answer) and a cloze left alone at the end of a
+   long sentence are centered; everything else stays left-aligned */
+#text.centered-line,
+#text .centered-line {
+  text-align: center;
+}
+
+#text .lone-cloze {
+  display: block;
+  text-align: center;
+}
+
+/* AnKing's mnemonic box stays left-justified, but its 50% width cap was
+   made for small text, so let it use the whole reading column */
+.card .mnemonics {
+  max-width: 100%;
+}
+
+.card b,
+.card strong {
+  color: var(--bold) !important;
+  font-weight: 650;
+}
+
+/* Cloze: tinted pill instead of plain bold color */
+.card .cloze,
+.card .cloze b,
+.card .cloze u,
+.card .cloze i {
+  color: var(--cloze) !important;
+}
+
+.card .cloze {
+  font-weight: 650 !important;
+  background: var(--cloze-tint);
+  border-radius: 0.3em;
+  padding: 0 0.22em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* A cloze spanning several lines (it wraps a <div> or <br>) gets split
+   into broken pill pieces, so it keeps only the colored text */
+.card .cloze:has(div, br, p, ul, ol, table) {
+  background: none !important;
+  padding: 0 !important;
+}
+
+.card .cloze.one-by-one,
+.card .cloze.one-by-one b,
+.card .cloze.one-by-one u,
+.card .cloze.one-by-one i,
+.card .cloze-hint,
+.card .cloze-hint b,
+.card .cloze-hint u,
+.card .cloze-hint i {
+  color: var(--obo) !important;
+}
+
+/* A cloze spanning several lines (it wraps a <div> or <br>) gets split
+   into broken pill pieces, so it keeps only the colored text */
+.card .cloze:has(div, br, p, ul, ol, table) {
+  background: none !important;
+  padding: 0 !important;
+}
+
+
+.card .cloze.one-by-one {
+  background: var(--obo-tint);
+}
+
+/* Divider between answer and extras */
+.card hr {
+  border: 0;
+  height: 1px;
+  background: var(--rule);
+  opacity: 1;
+  max-width: min(var(--column), 100%);
+  margin: 0.4em auto 1em;  /* the template already puts a <br> above it */
+}
+
+/* --- 4. EXTRA (moved under the answer by the back template) ---- */
+#extra,
+#extra i {
+  color: var(--ink-2) !important;
+}
+
+#extra {
+  font-style: normal;
+  font-size: 0.72em !important;
+  line-height: 1.6;
+  text-align: left;
+  max-width: min(var(--column), 100%);
+  margin: 0.2em auto 1em;
+  padding: 0.9em 1.15em;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  box-shadow: var(--panel-shadow);
+  box-sizing: border-box;
+}
+
+/* One-by-one hides Extra until every cloze is revealed */
+#extra.hidden {
+  display: none !important;
+}
+
+/* --- 5. REVEALED HINT FIELDS ----------------------------------- */
+/* Never set display here: the toggle relies on inline display:none */
+.card .hints {
+  font-style: normal;
+  color: var(--ink-2) !important;
+  text-align: left;
+  width: 100% !important;
+  max-width: min(var(--column), 100%);
+  margin: 0.5em auto 1em;
+  padding: 0.85em 1.1em;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  box-shadow: var(--panel-shadow);
+  box-sizing: border-box;
+}
+
+.card #missed {
+  color: var(--danger) !important;
+}
+
+/* --- 6. RESOURCE BUTTONS --------------------------------------- */
+.card .button-general {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.2;
+  padding: 7px 14px;
+  margin: 4px 3px;
+  border-radius: 999px;
+  border: 1px solid var(--btn-border) !important;
+  background: var(--btn-bg) !important;
+  color: var(--btn-ink) !important;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+html body.card .button-general:hover,
+html body.card #button-mq:hover,
+html body.card #button-pat:hover,
+html body.card #button-fa:hover,
+html body.card #button-sketchy:hover,
+html body.card #button-pixorize:hover,
+html body.card #button-physeo:hover,
+html body.card #button-bootcamp:hover,
+html body.card #button-ome:hover {
+  background: var(--cloze-tint) !important;
+  color: var(--cloze) !important;
+  border-color: transparent !important;
+}
+
+/* Open button: its own line, tinted, sits right above its panel */
+.card .button-general.expanded-button {
+  display: flex !important;
+  width: fit-content !important;
+  margin: 14px auto 0 !important;
+  background: var(--cloze-tint) !important;
+  color: var(--cloze) !important;
+  border-color: transparent !important;
+  font-weight: 650;
+}
+
+body.card #button-mq:not(.expanded-button) {
+  color: var(--danger) !important;
+}
+
+.mobile .card .button-general {
+  font-size: 15px;
+  padding: 9px 14px;
+}
+
+/* The empty <a class="hint"> anchors are what the H shortcut clicks.
+   Keep them in the layout (display:none broke H) but invisible. */
+.card a.hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Lecture Notes (moved above Extra by the back template).
+   Open: the button hides and the panel carries a small label instead.
+   Closed (Alt+1, or one-by-one before the last reveal): the pill comes back. */
+#hint-ln .button-general.expanded-button {
+  display: none !important;
+}
+
+#notes {
+  font-size: 0.72em !important;
+  line-height: 1.6;
+  margin-top: 0;
+}
+
+#notes::before {
+  content: "Personal notes";
+  display: block;
+  margin-bottom: 0.45em;
+  font-size: 11px;
+  font-weight: 700;
+  font-style: normal;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Open Lecture Notes directly above visible Extra: join them into one panel */
+#hint-ln:has(.expanded-button):has(+ #extra:not(.hidden)) #notes {
+  margin-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+#hint-ln:has(.expanded-button) + #extra:not(.hidden) {
+  margin-top: 0;
+  border-top: 1px solid var(--rule);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.mobile #notes {
+  font-size: 0.8em !important;
+}
+
+[id="1by1-btns"] {
+  margin: 0.2em 0 0.8em;
+}
+
+/* --- 7. TAG CHIPS (quiet until hovered) ------------------------ */
+#yt-wrapper {
+  margin-top: 2.4em !important;
+  opacity: 0.7;
+  transition: opacity 0.2s ease;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+#yt-wrapper:hover {
+  opacity: 1;
+}
+
+/* --- 8. BULLETS (from the beautify script) + LISTS ------------- */
+.bullet-line {
+  display: block;
+  padding-left: 1.2em;
+  text-indent: -1.2em;
+  text-align: left;
+  margin: 0.15em 0;
+}
+
+.bullet-spacer {
+  height: 0.5em;
+}
+
+.fake-bullet {
+  color: var(--bullet) !important;
+  font-weight: bold;
+  font-size: 1.2em;
+  margin-right: 0.4em;
+}
+
+#text ul, #text ol,
+#extra ul, #extra ol,
+.hints ul, .hints ol {
+  max-width: 100%;
+  padding-left: 1.3em;
+  margin: 0.3em 0;
+}
+
+.card li {
+  margin: 0.15em 0;
+}
+
+.card li::marker {
+  color: var(--bullet);
+}
+
+/* --- 9. IMAGES ------------------------------------------------- */
+#text img,
+#extra img,
+.hints img {
+  border-radius: 10px;
+}
+
+.hints img,
+#extra img {
+  display: block !important;
+  width: 90% !important;
+  max-width: 90% !important;
+  height: auto !important;
+  object-fit: contain;
+  margin: 8px auto !important;
+  flex: none !important;
+}
+
+#sketchy img,
+#sketchy2 img,
+#sketchyextra img {
+  max-width: 100% !important;
+  width: 100% !important;
+  min-width: unset !important;
+}
+
+#sketchy,
+#sketchy2,
+#sketchyextra {
+  max-width: 100% !important;
+  width: 100% !important;
+}
+
+#notes img {
+  max-height: 20% !important;
+  width: auto !important;
+}
+
+@media (max-width: 600px) {
+  .hints img,
+  #extra img {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+}
+
+/* --- 10. MOBILE PANELS ----------------------------------------- */
+.mobile #extra,
+.mobile .card .hints {
+  padding: 0.8em 0.95em;
+  border-radius: 12px;
+}
+
+.mobile #extra {
+  font-size: 0.8em !important;
+}

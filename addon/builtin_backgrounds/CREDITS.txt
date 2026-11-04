@@ -1,0 +1,15 @@
+Built-in background photos, used under the Unsplash License (https://unsplash.com/license).
+Resized and recompressed for the add-on.
+
+black_sand.webp      David Becker     https://unsplash.com/photos/ea4FS8zIsqE
+canyon.webp          Federica Galli   https://unsplash.com/photos/V-MASKSq4vI
+glacier_lagoon.webp  Leo_Visions      https://unsplash.com/photos/4rx3NLmWaZk
+coast.webp           Leo_Visions      https://unsplash.com/photos/6MLpgUfM8yY
+dusk.webp            Luca Micheli     https://unsplash.com/photos/ruWkmt3nU58
+waterfall.webp       Taylor Leopold   https://unsplash.com/photos/TBoYgfj1JlM
+highland_mist.webp   Andrew Ridley    https://unsplash.com/photos/Kt5hRENuotI
+forest_trail.webp    Lukasz Szmigiel  https://unsplash.com/photos/jFCViYFYcus
+rolling_hills.webp   Qingbao Meng     https://unsplash.com/photos/01_igFr7hd4
+starlight.webp       John Fowler      https://unsplash.com/photos/03Pv2Ikm5Hk
+na_pali.webp         Braden Jarvis    https://unsplash.com/photos/prSogOoFmkw
+wanaka_dusk.webp     Ken Cheung       https://unsplash.com/photos/KonWFWUaAuk
