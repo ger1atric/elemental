@@ -9,6 +9,7 @@ from __future__ import annotations
 RELEASES = [
     {"version": '1.9.3', "date": 'November 2, 2026', "notes": [
         ('New name', "Interactive Heatmap is now Elemental."),
+        ('Rolling Hills', "New installs start with the Rolling Hills theme. It looks best with Anki's dark mode (Preferences → Appearance → Theme)."),
         ('Your stats', "A stats window for your reviews, study times and topics. Click STATS next to the heatmap's views."),
         ('Reminders', "Short reminders under your decks, like your next exam or cards not synced. Pick them in Settings → Reminders."),
         ('Better day tooltips', "Hover a day to see how it compares to your average."),

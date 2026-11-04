@@ -157,12 +157,20 @@ class WhatsNewDialog(QDialog):
         layout.addWidget(scroll, 1)
         layout.addWidget(footer)
 
+# The look a brand-new install starts with: the Rolling Hills photo theme (its dark
+# version follows Anki's dark mode). Only for new installs; nobody's chosen look changes.
+FRESH_INSTALL_LOOK = {"heatmap_theme": "rolling_hills", "background_enabled": True,
+                      "background_source": "builtin:rolling_hills"}
+
+
 def check_whats_new():
     """Show What's New dialog if version has changed or on first install."""
     cfg = get_config()
     last_version = cfg.get("last_seen_version", "")
 
     if last_version != VERSION:
+        if not last_version and "heatmap_theme" not in (mw.addonManager.getConfig(__name__) or {}):
+            cfg.update(FRESH_INSTALL_LOOK)      # first run ever, no theme saved yet
         cfg["last_seen_version"] = VERSION
         write_config(cfg)
         releases = changelog.since(last_version)
