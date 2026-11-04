@@ -254,6 +254,34 @@ pages["05-themes"] = (1300, 800, f"""<style>{BASE}
 <div class="head"><h1>19 themes, and counting</h1><div class="sub">Each one in light and dark. Photo themes come with a matching background, and more themes are on the way.</div></div>
 <div class="grid">{tiles}</div>""")
 
+# 17: weak spots and stability, from the real Stats window (Repro Block expanded)
+def png(img, w, h, scale, extra=""):
+    url = "file://" + os.path.join(os.path.dirname(HERE), "promo", img)
+    return (f'<div class="shot" style="position:relative;width:{w*scale:.0f}px;height:{h*scale:.0f}px;'
+            f'background:url(\'{url}\') 0 0/{w*scale:.1f}px {h*scale:.1f}px no-repeat;{extra}"></div>')
+
+
+TS = 0.86
+pages["17-weak-spots"] = (1300, 800, f"""<style>{BASE}
+.mark{{position:absolute;left:40px;top:32px;font-size:17px;color:#e8e8ea}}
+.head{{text-align:center;padding-top:46px}}h1{{font-size:42px;font-weight:700;letter-spacing:-.5px;margin:0}}
+.sub{{font-size:18px;color:#a1a1aa;margin:10px 0 0}}
+.l{{position:absolute;left:52px;top:182px}}
+.r{{position:absolute;right:52px;top:182px;width:372px;display:flex;flex-direction:column;gap:22px}}
+.ring{{position:absolute;left:617px;top:255px;width:54px;height:25px;margin:-5px;border-radius:14px;box-shadow:0 0 0 2px {TEAL},0 0 18px rgba(111,209,192,.5)}}
+.note{{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:18px 20px}}
+.note b{{display:block;font-size:34px;color:#f0a09a;letter-spacing:-.5px}}
+.note .t{{font-size:16px;font-weight:600;margin-top:4px}}.note .d{{font-size:14px;line-height:1.5;color:#a1a1aa;margin-top:8px}}
+.cap{{font-size:13px;font-weight:600;color:#c9d3d1;margin:0 0 8px 2px}}</style>
+<div class="mark">{logo(26)}Elemental</div>
+<div class="head"><h1>Find what isn't sticking</h1><div class="sub">Retention and stability for every topic, so weak memories show up before they turn into lapses.</div></div>
+<div class="l">{png("stats_topics_endo.png", 920, 669, TS, "")}<div class="ring"></div></div>
+<div class="r">
+<div class="note"><b>−29%</b><div class="t">Adrenal Pathophysiology</div>
+<div class="d">Cards in this topic are less stable than cards you started around the same time, even though Endocrine as a whole is only 4% behind.</div></div>
+{png("stats_remembered.png", 396, 224, 0.94)}
+</div>""")
+
 os.makedirs(os.path.join(HERE, "html"), exist_ok=True)
 with open(os.path.join(HERE, "list.txt"), "w") as lst:
     for name, (w, h, body) in pages.items():
