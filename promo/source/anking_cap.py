@@ -11,16 +11,14 @@ note = AK.sample_note(col, nt) if not os.environ.get("NID") else col.get_note(in
 print("note", note.id, AK._field(note, "Text", 0)[:120].replace("\n", " "), flush=True)
 media = "file://" + os.path.expanduser("~/Library/Application Support/Anki2/jshen100/collection.media") + "/"
 import copy
-plain = copy.deepcopy(AK.removed(nt, list(AK.ORDER)))
-parts = AK._original_parts(plain)
-print("own parts found:", sorted(parts), flush=True)
-for name, text in parts.items():
-    if name.endswith(".css"):
-        plain["css"] = plain["css"].replace(text, "")
-    else:
-        side = "qfmt" if "_front" in name else "afmt"
-        for t in plain["tmpls"]:
-            t[side] = t[side].replace(text, "")
+# the real stock AnKingOverhaul, as shipped by the AnKing Note Types add-on
+STOCK = os.path.expanduser("~/Library/Application Support/Anki2/addons21/952691989/note_types/AnKingOverhaul")
+plain = copy.deepcopy(nt)
+plain["css"] = open(os.path.join(STOCK, "Styling.css")).read()
+for t in plain["tmpls"]:
+    t["qfmt"] = open(os.path.join(STOCK, "Front Template.html")).read()
+    t["afmt"] = open(os.path.join(STOCK, "Back Template.html")).read()
+print("stock status:", {k: AK.status(plain, k) for k in AK.ORDER}, flush=True)
 after = AK.applied(plain, list(AK.ORDER))
 for tag, use in (("before", plain), ("after", after)):
     html, css = AK.render(col, note, use, True)
