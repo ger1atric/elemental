@@ -296,6 +296,24 @@ pages["06-card-browser"] = (1300, 800, f"""<style>{BASE}
 <div class="st">{png("browser_mine.png", 1040, 1040 * 916 / 3080, 1.0, "border-radius:12px")}
 <div class="keys"><span>Colored clozes</span><span>Tinted card states</span><span>Symbols for suspended, buried and marked</span><span>Your own colors</span></div></div>""")
 
+# 18: AnKing card before / after (Clean Reading Theme + Beautify Text Dashes), the add-on's own render
+AKS = 0.635
+pages["18-anking-cards"] = (1300, 800, f"""<style>{BASE}
+.mark{{position:absolute;left:40px;top:32px;font-size:17px;color:#e8e8ea}}
+.head{{text-align:center;padding-top:40px}}h1{{font-size:42px;font-weight:700;letter-spacing:-.5px;margin:0}}
+.sub{{font-size:18px;color:#a1a1aa;margin:10px 0 0}}
+.st{{position:absolute;left:0;right:0;top:168px;display:flex;justify-content:center;align-items:flex-start;gap:34px}}
+.col{{display:flex;flex-direction:column;align-items:center;gap:10px}}
+.lbl{{font-size:14px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:#8b9493}}.lbl.on{{color:{TEAL}}}
+.arrow{{align-self:center;font-size:34px;color:#5b6664;margin-top:24px}}</style>
+<div class="mark">{logo(26)}Elemental</div>
+<div class="head"><h1>Cleaner AnKing cards</h1><div class="sub">An optional reading layout for AnKingOverhaul cards. Preview it on your own card, and remove it in one click.</div></div>
+<div class="st">
+<div class="col"><div class="lbl">AnKing default</div>{png("anking_before_crop.png", 620, 880, AKS, "background-color:#000")}</div>
+<div class="arrow">→</div>
+<div class="col"><div class="lbl on">With Clean Reading</div>{png("anking_after_crop.png", 620, 880, AKS)}</div>
+</div>""")
+
 os.makedirs(os.path.join(HERE, "html"), exist_ok=True)
 with open(os.path.join(HERE, "list.txt"), "w") as lst:
     for name, (w, h, body) in pages.items():
