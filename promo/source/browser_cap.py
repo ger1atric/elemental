@@ -20,5 +20,11 @@ d = mod.HeatmapSettingsDialog(None); d.resize(940, 680); d.show()
 d.nav.setCurrentItem([it for it, *_ in d._pages if it.text() == "Card Browser"][0]); wait(600)
 print("theme", d.browser_theme_combo.currentData(), "| custom", d.chk_custom_colors.isChecked(), "| icons", d.chk_state_icons.isChecked(),
       "| spacing", d.browser_spacing_combo.currentData(), flush=True)
+# poster version: symbols on, no Tags column, wider note field, nothing selected
+d.chk_state_icons.setChecked(True); wait(300)
+t = d.browser_preview.table
+t.setColumnHidden(2, True); t.clearSelection(); t.item(7, 1).setText("Learning")
+d.resize(1120, 680); wait(500)
+print("icons now", d.chk_state_icons.isChecked(), "| preview width", d.browser_preview.width(), flush=True)
 img = d.browser_preview.grab(); img.save(os.path.join(S, "promo", "browser_mine.png")); print("saved", img.width(), img.height(), flush=True)
 os._exit(0)
