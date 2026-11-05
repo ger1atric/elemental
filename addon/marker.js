@@ -61,16 +61,24 @@
     ".pill.paused > :not(.pz):not(.grip) { opacity: .45; }",
     ".pz { display: inline-flex; gap: 2px; margin-right: -1px; }",
     ".pz i { display: block; width: 3px; height: 10px; border-radius: 1px; background: #93a4bd; }",
-    ":host(.light) .pz i { background: #607089; }"
+    ":host(.light) .pz i { background: #607089; }",
+    // Pomodoro: a break offered or under way edges the pill in teal; click does something
+    ".pill.ready, .pill.brk { border-color: rgba(63,193,169,.55); }",
+    ":host(.light) .pill.ready, :host(.light) .pill.brk { border-color: rgba(14,125,110,.5); }",
+    ".pill.click { cursor: pointer; }",
+    // A panel holding a link (the pomodoro's Stop / Start) takes the mouse, so it can be clicked
+    ".hud.open .panel.live { pointer-events: auto; }",
+    ".pomo-act { cursor: pointer; font-size: 11.5px; font-weight: 600; }",
+    ".pomo-act:hover { text-decoration: underline; }"
   ].join("\n");
 
-  var host = null, hud = null, pill = null, panel = null, base = "";
+  var host = null, hud = null, pill = null, panel = null, base = "", root = null;
 
   function ensure() {
     if (host && host.isConnected) return;
     host = document.createElement("ret-marker");
     host.id = "ret-marker";
-    var root = host.attachShadow({ mode: "open" });
+    root = host.attachShadow({ mode: "open" });
     var style = document.createElement("style");
     style.textContent = CSS;
     hud = document.createElement("div");
@@ -85,16 +93,50 @@
     root.appendChild(hud);
     document.body.appendChild(host);
     // Open the panel toward the middle of the window, wherever the pill sits.
+    var closing = null;
     pill.addEventListener("mouseenter", function () {
+      clearTimeout(closing);
       var r = host.getBoundingClientRect();
       hud.classList.toggle("up", r.top + r.height / 2 > window.innerHeight / 2);
       hud.classList.toggle("left", r.left + r.width / 2 < window.innerWidth / 2);
       if (panel.childNodes.length) hud.classList.add("open");
     });
-    pill.addEventListener("mouseleave", function () { hud.classList.remove("open"); });
+    // Leaving the pill closes the panel, unless the mouse goes on into a panel with a link
+    // to click (it gets a moment to cross the gap between them).
+    function close() { hud.classList.remove("open"); }
+    pill.addEventListener("mouseleave", function () {
+      clearTimeout(closing);
+      if (panel.classList.contains("live")) closing = setTimeout(close, 250); else close();
+    });
+    panel.addEventListener("mouseenter", function () { clearTimeout(closing); });
+    panel.addEventListener("mouseleave", function () { clearTimeout(closing); closing = setTimeout(close, 150); });
+    panel.addEventListener("mousedown", function (ev) { ev.preventDefault(); });
+    panel.addEventListener("click", function (ev) {
+      var a = ev.target.closest && ev.target.closest(".pomo-act");
+      if (a && window.pycmd) pycmd("heatmap:pomo:" + a.getAttribute("data-act"));
+    });
     // Never take focus or start a text selection: keys stay with the reviewer.
     pill.addEventListener("mousedown", function (ev) { ev.preventDefault(); });
+    // The pomodoro's break: start it, or end it early (not from the drag handle)
+    pill.addEventListener("click", function (ev) {
+      if (!pill.classList.contains("click") || (ev.target.closest && ev.target.closest(".grip"))) return;
+      if (window.pycmd) pycmd("heatmap:pomo:click");
+    });
   }
+
+  // The pomodoro's countdowns (data-end, ms) tick here once a second, with the ring
+  // beside one (data-total, s) emptying as it goes.
+  function tickPomo() {
+    if (!root || !host || !host.isConnected) return;
+    var now = Date.now();
+    [].forEach.call(root.querySelectorAll(".pomo-t[data-end]"), function (e) {
+      var s = Math.max(0, Math.round((+e.getAttribute("data-end") - now) / 1000));
+      e.textContent = Math.floor(s / 60) + ":" + ("0" + s % 60).slice(-2);
+      var total = +e.getAttribute("data-total"), arc = total && e.parentNode.querySelector(".pomo-arc");
+      if (arc) arc.setAttribute("stroke-dasharray", (50.27 * s / total).toFixed(2) + " 50.27");
+    });
+  }
+  setInterval(tickPomo, 1000);
 
   function applySaved() {
     try {
@@ -286,7 +328,11 @@
       pill.innerHTML = (p.paused ? '<span class="pz"><i></i><i></i></span>' : "") + p.pill;
       pill.classList.toggle("drift", p.focus === "drift");
       pill.classList.toggle("paused", !!p.paused);
+      pill.classList.remove("ready", "brk", "click");
+      if (p.pomo) p.pomo.split(" ").forEach(function (c) { pill.classList.add(c); });
+      pill.title = p.pomo_title || "";
       panel.innerHTML = p.panel;
+      panel.classList.toggle("live", !!panel.querySelector(".pomo-act"));
       if (!p.panel) hud.classList.remove("open");
       // The pill redraws more than once per card: play each answer's ring once.
       if (p.ring && window.__rtRingId !== p.ring.id) {
@@ -294,6 +340,7 @@
         playRing(p.ring.kind, p.ring.style);
       }
       if (p.draggable) { addGrip(); applySaved(); }
+      tickPomo();
     },
     remove: function () {
       if (host && host.parentNode) host.parentNode.removeChild(host);

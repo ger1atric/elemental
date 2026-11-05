@@ -7,6 +7,10 @@ __init__.py to match.
 from __future__ import annotations
 
 RELEASES = [
+    {"version": '1.9.4', "date": 'November 4, 2026', "notes": [
+        ('Pomodoro timer', "A focus timer in the review pill, with breaks in between. Turn it on in Settings → Review Pill."),
+        ('Simpler review pill', "Hovering the pill shows one time: time left or your finish time, whichever you chose."),
+    ]},
     {"version": '1.9.3', "date": 'November 2, 2026', "notes": [
         ('New name', "Interactive Heatmap is now Elemental."),
         ('Rolling Hills', "New installs start with the Rolling Hills theme. It looks best with Anki's dark mode (Preferences → Appearance → Theme)."),

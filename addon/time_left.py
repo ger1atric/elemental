@@ -422,6 +422,26 @@ def lock_in() -> dict | None:
     return dict(today, typical=m.lock_typical, range=m.lock_range)
 
 
+def block_focus(since_ms: int, until_ms: int) -> float | None:
+    """The focus score (0..1) of the answers given between since_ms and until_ms (a
+    pomodoro block), or None when off, not ready, or too few answers to say."""
+    m = _get_model()
+    if m is None or not m.mu or mw.col is None:
+        return None
+    try:
+        conn = estimator.connect(mw.col.path)
+        try:
+            rows = estimator.today_focus(m, conn, int(mw.col.sched.day_cutoff), focus_log.today_index(),
+                                         _away_is_lookup(), _reading_counts())
+        finally:
+            conn.close()
+    except Exception:
+        return None
+    xs = [x for rid, x, _row in rows if since_ms <= rid <= until_ms and x is not None]
+    st = estimator.lock_stats(xs) if len(xs) >= 8 else None
+    return st["score"] if st else None
+
+
 def last_answer():
     """(revlog id, 'focus' | 'slow' | 'lookup') for today's latest answer; None when off
     or not ready. See estimator.last_answer."""

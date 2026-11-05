@@ -30,7 +30,8 @@ from pathlib import Path
 from aqt import mw, gui_hooks
 from aqt.qt import QTimer
 
-from . import estimator, time_left
+from . import estimator, time_left, pomodoro
+from .icons import icon
 
 REVIEW_PILL_API = 1
 _get_config = _write_config = None
@@ -68,6 +69,8 @@ def setup(get_config, write_config, addon_name: str) -> None:
     time_left.listeners.append(_update_marker)
     from . import focus_log
     focus_log.listeners.append(_update_marker)     # the card on screen was left out of focus, or counted again
+    pomodoro.setup(get_config)
+    pomodoro.listeners.append(_update_marker)      # a break offered, started, ended
 
 
 def _raw() -> dict:
@@ -436,7 +439,8 @@ def _build_payload() -> dict | None:
             if r_pct is not None:
                 retention = (r_pct, above, margin)
     est = _reviewer_estimate(did) if show_time_part else None
-    if retention is None and est is None:
+    pomo = _pomo_state()
+    if retention is None and est is None and pomo is None:
         return None
 
     focus = _focus() if cfg.get("focus_cue", True) else None
@@ -477,7 +481,6 @@ def _build_payload() -> dict | None:
     show_time = bool(est is not None and est["all"]["n"] and (not reviews_done or est["new"]["n"]))
     if show_time:
         a, rv, nw = est["all"], est["reviews"], est["new"]
-        done = est.get("done") or 0.0
         now = datetime.datetime.now()
         # Reviews get their own finish time when they come before the new cards;
         # mixed in (or after), they finish with everything else.
@@ -501,34 +504,19 @@ def _build_payload() -> dict | None:
         else:
             time_bit = ('<span class="sep">Finish</span>'
                         f'<span class="num" style="font-weight:600;{tint}">~{clock(head["mean"])}</span>')
-        # The hover leads with hours and minutes left either way; the finish clock
-        # goes on the line under it.
-        title = title.replace("finish", "left")
-        big, under = f"~{_fmt_dur(head['mean'])}", f"Finish ~{clock(head['mean'])}"
-        spread = f"{_fmt_dur(head['lo'])}&ndash;{_fmt_dur(head['hi'])}"
-        all_title, all_val, all_sub = "All cards left", f"~{_fmt_dur(a['mean'])}", f"Finish ~{clock(a['mean'])}"
+        # The hover leads with what the pill shows (time left or the finish time), with
+        # the other one on the line under it. Nothing else: one figure, one reminder.
+        if _show_left():
+            title = title.replace("finish", "left")
+            big, under = f"~{_fmt_dur(head['mean'])}", f"Finish ~{clock(head['mean'])}"
+        else:
+            big, under = f"~{clock(head['mean'])}", f"~{_fmt_dur(head['mean'])} left"
         rows = [
             '<div class="sec"><div class="row">'
             f'<span class="label">{title}</span>'
             f'<span class="big">{big}</span></div>'
-            f'<div class="row"><span class="sub">{under}</span>'
-            f'<span class="sub">{spread}</span></div>'
+            f'<div class="row"><span class="sub">{under}</span></div>'
         ]
-        if done >= 60:
-            rows.append(f'<div class="row"><span class="sub">{_fmt_dur(done)} done</span>'
-                        f'<span class="sub">~{round(100 * done / (done + head["mean"]))}%</span></div>')
-        if split:
-            rows.append(
-                f'<div class="row" style="margin-top:7px;"><span class="label">{all_title}</span>'
-                f'<span class="val">{all_val}</span></div>'
-                f'<div class="row"><span class="sub">+{_fmt_dur(nw["mean"])} new</span>'
-                f'<span class="sub">{all_sub}</span></div>'
-            )
-        elif rv["n"] and nw["n"] and not reviews_done:
-            rows.append(
-                f'<div class="row"><span class="sub">Reviews {_fmt_dur(rv["mean"])}</span>'
-                f'<span class="sub">New {_fmt_dur(nw["mean"])}</span></div>'
-            )
         if lock:
             rows.append(_lock_block(lock, night))
         if drift:
@@ -545,13 +533,163 @@ def _build_payload() -> dict | None:
         pill = sep.join((ret_text if ret_in_pill else []) + ([time_bit] if time_bit else []))
     if not pill and ret_text:
         pill = sep.join(ret_text)       # nothing else to show: the numbers, so there's a pill to hover
-    if not pill:
-        return None
     if drift and not show_time:
         panel.append(f'<div class="sec">{_drift_row(focus, night)}</div>')
+    pomo_bits = _pomo_bits(pomo, night, drift) if pomo else None
+    if pomo_bits and pomo_bits.get("row") and panel:
+        # stopped: Start goes in the panel's last section, not a section of its own
+        panel[-1] = panel[-1][:-len("</div>")] + pomo_bits["row"] + "</div>"
+        pomo_bits = dict(pomo_bits, sec="")
+    if pomo_bits:
+        if pomo_bits["replace"]:        # on a break: the pill is the break (the panel keeps its order)
+            pill = pomo_bits["pill"]
+            panel.append(pomo_bits["sec"])
+        else:
+            if pomo_bits["pill"]:
+                pill = pill + sep + pomo_bits["pill"] if pill else pomo_bits["pill"]
+            if pomo_bits["sec"]:
+                panel.append(pomo_bits["sec"])
+    if not pill:
+        return None
     from . import focus_log
     return {"pill": pill, "panel": "".join(panel), "night": night, "focus": "drift" if drift else "",
-            "ring": _ring(cfg), "paused": focus_log.marked()}
+            "ring": _ring(cfg), "paused": focus_log.marked(),
+            "pomo": pomo_bits["cls"] if pomo_bits else "", "pomo_title": pomo_bits["title"] if pomo_bits else ""}
+
+
+# ──────────────────────────────────────────────────────────────
+# Pomodoro (pomodoro.py): a countdown at the end of the pill, a section in the panel.
+# A break offered or under way takes the pill over. The page counts the time down
+# itself (data-end), so nothing is redrawn every second.
+# ──────────────────────────────────────────────────────────────
+_ARC = 50.27        # the ring's circumference (r = 8)
+
+
+def _pomo_state() -> dict | None:
+    return pomodoro.state() if pomodoro.enabled() else None
+
+
+def _teal(night: bool) -> str:
+    return "#3fc1a9" if night else "#0e7d6e"
+
+
+def _pomo_ring(frac: float, night: bool) -> str:
+    track = "rgba(255,255,255,.18)" if night else "rgba(0,0,0,.14)"
+    return ('<svg width="13" height="13" viewBox="0 0 20 20" style="display:block;flex:none" aria-hidden="true">'
+            f'<circle cx="10" cy="10" r="8" fill="none" stroke="{track}" stroke-width="2.6"/>'
+            f'<circle class="pomo-arc" cx="10" cy="10" r="8" fill="none" stroke="{_teal(night)}" stroke-width="2.6" '
+            f'stroke-linecap="round" transform="rotate(-90 10 10)" stroke-dasharray="{_ARC * frac:.2f} {_ARC}"/></svg>')
+
+
+def _pomo_time(sec: float, end_ms, total: int = 0, cls: str = "num", style: str = "") -> str:
+    live = (f' data-end="{end_ms}"' + (f' data-total="{total}"' if total else "")) if end_ms else ""
+    return f'<span class="{cls} pomo-t"{live} style="{style}">{pomodoro.mmss(sec)}</span>'
+
+
+def _pomo_dots(done: int, of: int, night: bool) -> str:
+    on = min(max(done, 0), of)
+    return (f'<span class="sub" style="letter-spacing:2px"><span style="color:{_teal(night)}">{"●" * on}</span>'
+            f'{"○" * (of - on)}</span>')
+
+
+def _pomo_act(act: str, text: str, night: bool) -> str:
+    """A link in the panel (the panel takes clicks while it holds one)."""
+    return f'<span class="pomo-act" data-act="{act}" style="color:{_teal(night)};">{text}</span>'
+
+
+def _pomo_stop(night: bool) -> str:
+    return f'<div class="row" style="margin-top:6px;"><span></span>{_pomo_act("stop", "Stop timer", night)}</div>'
+
+
+_block_cache = {}
+
+
+def _pomo_block(start_ms: int, end_ms: int) -> dict:
+    """Cards answered in a finished block, % right of its review cards, its focus score."""
+    key = (start_ms, end_ms)
+    if key not in _block_cache:
+        row = _readonly_query(
+            "SELECT count(), sum(CASE WHEN type = 1 THEN 1 ELSE 0 END), "
+            "sum(CASE WHEN type = 1 AND ease > 1 THEN 1 ELSE 0 END) "
+            f"FROM revlog WHERE id BETWEEN {int(start_ms)} AND {int(end_ms)}") or (0, 0, 0)
+        n, rv, ok = (int(v or 0) for v in row)
+        api = _time_api()
+        fn = getattr(api, "block_focus", None) if api else None
+        _block_cache.clear()
+        _block_cache[key] = {"n": n, "right": round(100 * ok / rv) if rv >= 5 else None,
+                             "focus": fn(start_ms, end_ms) if fn else None}
+    return _block_cache[key]
+
+
+def _pomo_bits(st: dict, night: bool, drift: bool) -> dict | None:
+    """The pill's piece, the panel's section, whether the break takes the pill over, the
+    pill's extra class (click: clicking it does something) and its tooltip."""
+    ph, teal = st.get("phase"), _teal(night)
+    if ph == "idle":
+        return None
+    block, of = st.get("block", 1), st.get("of", 4)
+    cup = f'<span style="display:flex;color:{teal}">{icon("coffee", "14px", 2.2)}</span>'
+    brk_word = '<span class="num" style="font-weight:600;">Break</span>'
+    if ph == "focus":
+        left, total, held = st["left"], st["total"], bool(st.get("held"))
+        offer = bool(drift and not held and pomodoro.cfg().get("pomo_drift_break"))
+        pomodoro.offering(offer)
+        ring = _pomo_ring(left / total if total else 0, night)
+        if held:                        # paused from the pill: bars, the time dimmed
+            pill = ('<span class="pz"><i></i><i></i></span><span style="display:flex;align-items:center;gap:7px;'
+                    f'opacity:.5">{ring}{_pomo_time(left, None)}</span>')
+        else:
+            pill = ring + _pomo_time(left, st.get("end_ms"), total)
+        if offer:
+            pill += f'<span style="display:flex;color:{_amber(night)}">{icon("coffee", "14px", 2.2)}</span>'
+        if held:
+            line = f'<span class="sub">{block} of {of} · paused</span><span class="sub">click to resume</span>'
+        else:
+            brk_at = f" · break at {pomodoro.clock(time.time() + left)}" if st.get("running") else ""
+            line = f'<span class="sub">{block} of {of}{brk_at}</span>{_pomo_dots(block - 1, of, night)}'
+        sec = ('<div class="sec"><div class="row"><span class="label">Focus block</span>'
+               + _pomo_time(left, None if held else st.get("end_ms"), 0, "big",
+                            "color:#93a4bd;" if held and night else "color:#607089;" if held else f"color:{teal};")
+               + f'</div><div class="row">{line}</div>'
+               + (f'<div class="row" style="margin-top:6px;"><span class="sub" style="color:{_amber(night)};">'
+                  'Drifting</span><span class="sub">click for a break</span></div>' if offer else "")
+               + _pomo_stop(night) + '</div>')
+        title = "Take a break now" if offer else "Resume" if held else "Pause"
+        return {"pill": pill, "sec": sec, "replace": False, "cls": "click", "title": title}
+    if ph == "brk":
+        end = st["brk_end_ms"]
+        left = max(0, end / 1000 - time.time())
+        pill = cup + brk_word + _pomo_time(left, end, 0, "sep")
+        rows = ['<div class="sec"><div class="row"><span class="label">'
+                f'{"Long break" if st.get("long") else "Break"}</span>'
+                + _pomo_time(left, end, 0, "big", f"color:{teal};") + '</div>'
+                f'<div class="row"><span class="sub">back at {pomodoro.clock(end / 1000)}</span>'
+                '<span class="sub">click to end it</span></div>']
+        if st.get("start_ms"):          # how the block that just ended went
+            bl = _pomo_block(st["start_ms"], st["end_ms"])
+            bits = [f"{bl['n']} card{'s' if bl['n'] != 1 else ''}"]
+            if bl["focus"] is not None:
+                bits.append(f"focus {round(100 * bl['focus'])}%")
+            if bl["right"] is not None:
+                bits.append(f"{bl['right']}% right")
+            rows.append(f'<div class="row" style="margin-top:7px;"><span class="label">Block {block} done</span>'
+                        f'{_pomo_dots(block, of, night)}</div>'
+                        f'<div class="row"><span class="sub">{" · ".join(bits)}</span></div>')
+        return {"pill": pill, "sec": "".join(rows) + _pomo_stop(night) + "</div>", "replace": True, "cls": "brk click",
+                "title": "End the break"}
+    if ph == "off":                     # stopped: one row at the end of the panel, with Start
+        row = (f'<div class="row" style="margin-top:6px;"><span class="sub">Pomodoro timer</span>'
+               f'{_pomo_act("start", "Start", night)}</div>')
+        return {"pill": "", "sec": "", "row": row, "replace": False, "cls": "", "title": ""}
+    if ph == "over":
+        nxt = st.get("next", 1)
+        pill = _pomo_ring(1, night) + _pomo_time(st["total"], None)
+        sec = ('<div class="sec"><div class="row"><span class="label">Break over</span>'
+               f'<span class="big" style="color:{teal};">{pomodoro.mmss(st["total"])}</span></div>'
+               f'<div class="row"><span class="sub">Block {nxt} starts with your next card</span></div>'
+               + _pomo_stop(night) + '</div>')
+        return {"pill": pill, "sec": sec, "replace": False, "cls": "", "title": ""}
+    return None
 
 
 RING_FRESH_MS = 5000        # ring only for an answer this recent (not after undo or a pause)
@@ -984,6 +1122,13 @@ def _sample_eases() -> list:
     return out
 
 
+def _sample_pomo() -> dict:
+    """Block 2 of 4 with 18:42 left, counting down."""
+    left = 18 * 60 + 42
+    return {"phase": "focus", "block": 2, "of": 4, "total": 25 * 60, "left": left, "running": True,
+            "end_ms": int((time.time() + left) * 1000)}
+
+
 def _sample_lock() -> dict:
     """A focus score of 86% over 96 answers, with a typical day of 81%."""
     import math
@@ -1014,6 +1159,7 @@ def preview_payload(overrides: dict, night: bool, show_left: bool) -> dict | Non
         "_lock_in": _sample_lock,
         "_ring": lambda cfg: None,
         "_show_left": lambda: show_left,
+        "_pomo_state": lambda: _sample_pomo() if cfg.get("pomo") else None,
     }
     saved = {k: g[k] for k in swap}
     g.update(swap)

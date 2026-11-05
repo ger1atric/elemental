@@ -84,7 +84,12 @@ The only thing that ever leaves your computer is feedback you choose to send fro
 
 Found a bug or have an idea? Send it from **Settings → Feedback**, no account needed. I read every message.
 
-## What's new in 1.9.3
+## What's new in 1.9.4
+
+- A pomodoro timer in the review pill, with breaks in between. Turn it on in **Settings → Review Pill**.
+- Hovering the pill shows one time: time left or your finish time, whichever you chose.
+
+In 1.9.3:
 
 - New name: Interactive Heatmap is now Elemental.
 - Click STATS next to the heatmap's views to see the last month, three months, year or all time: your reviews each week, when you study, your topics and the cards you forget most.

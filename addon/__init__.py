@@ -33,7 +33,7 @@ except ImportError:
         QPolygonF = None
 
 ADDON_NAME = "Elemental"
-VERSION = "1.9.3"
+VERSION = "1.9.4"
 
 def _is_dark_mode():
     """Check if Anki is in dark mode."""
@@ -346,6 +346,14 @@ DEFAULT_CONFIG = {
     "review_pill_span": 100,               # Cards the retention graph spans
     "review_pill_smoothing": 2,            # Graph smoothing
     "review_pill_min_reviews": 1,          # Hide until this many reviews
+    "pomo_enabled": False,                 # Pomodoro timer in the review pill
+    "pomo_focus_min": 25,                  # ... focus block length
+    "pomo_break_min": 5,                   # ... break length
+    "pomo_long_min": 15,                   # ... long break length
+    "pomo_long_every": 4,                  # ... a long break after this many blocks
+    "pomo_pause_away": True,               # ... the block only counts time on the review screen
+    "pomo_drift_break": False,             # ... offer a break when focus drifts
+    "pomo_notify": True,                   # ... a notification when a break ends
     # Background photo (background.py) — off by default
     "background_enabled": False,           # A photo behind the main screens
     "background_source": "builtin:dusk",   # mine (your folder) | builtin:<name> (background.BUILTIN)
@@ -1087,6 +1095,7 @@ def _refresh_heatmap_screen():
 from . import time_left
 time_left.setup(get_config, write_config, __name__)
 from . import review_pill
+from . import pomodoro
 review_pill.setup(get_config, write_config, __name__)
 from . import background
 background.setup(get_config, __name__)
@@ -3965,6 +3974,40 @@ class HeatmapSettingsDialog(QDialog):
         fin = indented(ff)
         layout.addWidget(fin)
 
+        # Part 3: a pomodoro timer
+        pc = pomodoro.cfg()
+        self.chk_rp_pomo = QCheckBox("Pomodoro timer")
+        self.chk_rp_pomo.setToolTip("A focus timer at the end of the pill, with breaks in between.")
+        self.chk_rp_pomo.setChecked(bool(self.cfg.get("pomo_enabled", False)))
+        layout.addWidget(self.chk_rp_pomo)
+        pv = QVBoxLayout()
+        pform = QFormLayout()
+        self.rp_pomo_focus = spin(5, 120, pc["pomo_focus_min"], " min")
+        pform.addRow("Focus blocks:", self.rp_pomo_focus)
+        self.rp_pomo_break = spin(1, 60, pc["pomo_break_min"], " min")
+        pform.addRow("Breaks:", self.rp_pomo_break)
+        long_row = QHBoxLayout()
+        self.rp_pomo_long = spin(1, 90, pc["pomo_long_min"], " min")
+        self.rp_pomo_every = spin(2, 12, pc["pomo_long_every"])
+        long_row.addWidget(self.rp_pomo_long)
+        long_row.addWidget(QLabel("after every"))
+        long_row.addWidget(self.rp_pomo_every)
+        long_row.addWidget(QLabel("blocks"))
+        long_row.addStretch()
+        pform.addRow("Long breaks:", long_row)
+        pv.addLayout(pform)
+        self.chk_rp_pomo_pause = QCheckBox("Pause when I leave reviews")
+        self.chk_rp_pomo_pause.setChecked(bool(pc["pomo_pause_away"]))
+        pv.addWidget(self.chk_rp_pomo_pause)
+        self.chk_rp_pomo_drift = QCheckBox("Offer a break when my focus drifts")
+        self.chk_rp_pomo_drift.setChecked(bool(pc["pomo_drift_break"]))
+        pv.addWidget(self.chk_rp_pomo_drift)
+        self.chk_rp_pomo_notify = QCheckBox("Notify me when a break ends")
+        self.chk_rp_pomo_notify.setChecked(bool(pc["pomo_notify"]))
+        pv.addWidget(self.chk_rp_pomo_notify)
+        pomo_box = indented(pv)
+        layout.addWidget(pomo_box)
+
         place = QGroupBox("Where it sits")
         pf = QFormLayout()
         self.rp_corner = combo([("Top right", "top-right"), ("Top left", "top-left"),
@@ -3978,16 +4021,18 @@ class HeatmapSettingsDialog(QDialog):
 
         def sync(*_):
             on = self.chk_rp_enabled.isChecked()
-            for w in (self.chk_rp_retention, self.chk_rp_time, place):
+            for w in (self.chk_rp_retention, self.chk_rp_time, self.chk_rp_pomo, place):
                 w.setEnabled(on)
             ret.setEnabled(on and self.chk_rp_retention.isChecked())
             fin.setEnabled(on and self.chk_rp_time.isChecked())
+            pomo_box.setEnabled(on and self.chk_rp_pomo.isChecked())
+            self.chk_rp_pomo_drift.setEnabled(self.chk_time_enabled.isChecked())
             graph_on = self.rp_style.currentData() == "graph"
             self.rp_span.setEnabled(graph_on)
             self.rp_smooth.setEnabled(graph_on)
             note.setVisible(not self.chk_time_enabled.isChecked())
         for sig in (self.chk_rp_enabled.toggled, self.chk_rp_retention.toggled, self.chk_rp_time.toggled,
-                    self.chk_time_enabled.toggled, self.rp_style.currentIndexChanged):
+                    self.chk_time_enabled.toggled, self.rp_style.currentIndexChanged, self.chk_rp_pomo.toggled):
             sig.connect(sync)
         # At least one part stays on: switching one off while the other is off turns that one on.
         self.chk_rp_retention.toggled.connect(
@@ -4010,6 +4055,7 @@ class HeatmapSettingsDialog(QDialog):
                 "show_time_left": self.chk_rp_time.isChecked(),
                 "focus_cue": self.chk_rp_focus.isChecked(),
                 "min_reviews_to_show": 0,
+                "pomo": self.chk_rp_pomo.isChecked(),
             }
             night = _is_dark_mode()
             payload = review_pill.preview_payload(overrides, night, self.rp_show_as.currentData() == "left")
@@ -4041,7 +4087,7 @@ class HeatmapSettingsDialog(QDialog):
         for sig in (self.chk_rp_retention.toggled, self.rp_style.currentIndexChanged, self.rp_target.valueChanged,
                     self.rp_window.currentIndexChanged, self.rp_span.valueChanged, self.rp_smooth.valueChanged,
                     self.chk_rp_time.toggled, self.chk_rp_focus.toggled, self.rp_show_as.currentIndexChanged,
-                    self.rp_corner.currentIndexChanged):
+                    self.rp_corner.currentIndexChanged, self.chk_rp_pomo.toggled):
             sig.connect(self.rp_preview.refresh)
 
         layout.addStretch()
@@ -4696,6 +4742,14 @@ class HeatmapSettingsDialog(QDialog):
         self.cfg['review_pill_draggable'] = self.chk_rp_drag.isChecked()
         self.cfg['review_pill_span'] = self.rp_span.value()
         self.cfg['review_pill_smoothing'] = self.rp_smooth.value()
+        self.cfg['pomo_enabled'] = self.chk_rp_pomo.isChecked()
+        self.cfg['pomo_focus_min'] = self.rp_pomo_focus.value()
+        self.cfg['pomo_break_min'] = self.rp_pomo_break.value()
+        self.cfg['pomo_long_min'] = self.rp_pomo_long.value()
+        self.cfg['pomo_long_every'] = self.rp_pomo_every.value()
+        self.cfg['pomo_pause_away'] = self.chk_rp_pomo_pause.isChecked()
+        self.cfg['pomo_drift_break'] = self.chk_rp_pomo_drift.isChecked()
+        self.cfg['pomo_notify'] = self.chk_rp_pomo_notify.isChecked()
 
         # Background photo
         self.cfg['background_enabled'] = self.chk_bg_enabled.isChecked()
@@ -6683,6 +6737,7 @@ _EXAM_CSS = """
 .hm-note-ic.gray { opacity: .6; }
 .hm-note-ic.blue { color: #3a8ee6; }
 .hm-note-ic.green { color: #3bab5a; }
+.hm-note-ic.teal { color: #2aa892; }
 /* a calendar page: the month on red over a white page with the day in black */
 .hm-cal { width: 24px; flex: none; border-radius: 5px; overflow: hidden; background: #fff; text-align: center;
   box-shadow: 0 1px 3px rgba(0,0,0,.22), 0 0 0 1px rgba(0,0,0,.06); }
@@ -8261,7 +8316,51 @@ def _deck_notices(cfg, today_pill=False):
     if today_pill and out:
         synced = 1 if "Not synced" in out[0] else 0
         out.insert(synced, TODAY_SLOT)
+    pomo = _pomo_notice()
+    if pomo:
+        out.insert(0, pomo)
     return out
+
+
+def _pomo_notice():
+    """The pomodoro's reminder on the deck list: a break counting down (it turns into
+    'Break over' when it ends, without a redraw), a break that's over, or a paused block.
+    Nothing when it's stopped."""
+    if not pomodoro.enabled():
+        return None
+    st = pomodoro.state()
+    ph = st.get("phase")
+    if ph == "brk":
+        end = st["brk_end_ms"]
+        left = max(0, end / 1000 - time.time())
+        nxt = st["block"] % st["of"] + 1        # after the long break, block 1 of a new set
+        over = (f'<span class="hm-note-ic teal">{icon("play")}</span><span>Break over</span>'
+                f'<span class="hm-note-w">block {nxt} of {st["of"]}</span>')
+        return (f'<span class="hm-note-ic teal">{icon("coffee")}</span><span>Break</span>'
+                f'<span class="hm-note-w"><span class="hm-pomo-t" data-end="{end}" data-over="{_html.escape(over)}">'
+                f'{pomodoro.mmss(left)}</span> left · back at {pomodoro.clock(end / 1000)}</span>' + _POMO_JS)
+    if ph == "over":
+        return (f'<span class="hm-note-ic teal">{icon("play")}</span><span>Break over</span>'
+                f'<span class="hm-note-w">block {st["next"]} of {st["of"]}</span>')
+    if ph == "focus" and not st.get("running") and st.get("left", 0) > 0:
+        return (f'<span class="hm-note-ic teal">{icon("clock")}</span><span>Block {st["block"]} paused</span>'
+                f'<span class="hm-note-w">{pomodoro.mmss(st["left"])} left</span>')
+    return None
+
+
+# Counts the break down wherever the roll has put it; at the end the reminder reads Break over.
+_POMO_JS = """<script>(function(){
+  if (window.hmPomoTick) return;
+  window.hmPomoTick = setInterval(function () {
+    var now = Date.now();
+    [].forEach.call(document.querySelectorAll('.hm-pomo-t[data-end]'), function (e) {
+      var s = Math.max(0, Math.round((+e.getAttribute('data-end') - now) / 1000));
+      if (s > 0) { e.textContent = Math.floor(s / 60) + ':' + ('0' + s % 60).slice(-2); return; }
+      var box = e.parentNode && e.parentNode.parentNode;
+      if (box) box.innerHTML = e.getAttribute('data-over');
+    });
+  }, 1000);
+})();</script>"""
 
 
 WEEK_CHANGE = 0.15      # this week against last week: shown once they differ by this much
@@ -8486,6 +8585,15 @@ def on_msg(h, m, c):
     if m == "heatmap:settings": open_settings(); return True, None
     if m.startswith("heatmap:ringlog:"):
         review_pill.on_ring_report(m[len("heatmap:ringlog:"):])
+        return True, None
+    if m == "heatmap:pomo:click":
+        pomodoro.click()
+        return True, None
+    if m == "heatmap:pomo:stop":
+        pomodoro.stop()
+        return True, None
+    if m == "heatmap:pomo:start":
+        pomodoro.start()
         return True, None
     if m.startswith("heatmap:savemode:"):
         # The page already recolored itself (hmSetMode); just remember the view.

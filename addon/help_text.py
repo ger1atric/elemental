@@ -128,6 +128,13 @@ HELP = {
                      "be a sign your mind is wandering."),
     "rp_ring": ("A quick ring around the pill after each answer. It's green if the card took about as long as "
                 "usual, and amber if it took longer. Cards you looked something up for don't get one."),
+    "chk_rp_pomo": ("A countdown at the end of the pill. When a block ends, the break starts by itself, and "
+                    "the next block starts when it's over. After the long break, a new set begins. Click the pill "
+                    "to pause a block or end a break early. Hover it to stop the timer, or start it again."),
+    "chk_rp_pomo_pause": "The block only counts time on the review screen, so stepping away doesn't use it up.",
+    "chk_rp_pomo_drift": ("When several cards in a row take much longer than usual, the pill offers a break "
+                          "early. Needs Time Left turned on."),
+    "chk_rp_pomo_notify": "A notification when a break ends, if you've switched away from Anki.",
 
     # Feedback
     "fb_diag": ("Sends along the add-on, Anki and system versions, which features you use, and your list of "
