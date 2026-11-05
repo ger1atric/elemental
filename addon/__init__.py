@@ -7924,8 +7924,8 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
                                 if (p < 1) requestAnimationFrame(step);
                                 else span.className = 'stat-badge ' + (to > 0 ? type : 'badge-dim');
                             }};
-                            // once the page is on screen (moments.py), with the other animations
-                            (window.hmWhenShown || ((f) => f()))(() => requestAnimationFrame(step));
+                            // once the page is on screen (moments.py), after a short beat on the old number
+                            (window.hmWhenShown || ((f) => f()))(() => setTimeout(() => requestAnimationFrame(step), 300));
                         }};
                         for (let i = 1; i < rows.length; i++) {{
                             const row = rows[i];
