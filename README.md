@@ -87,7 +87,7 @@ Found a bug or have an idea? Send it from **Settings → Feedback**, no account 
 ## What's new in 1.9.4
 
 - A pomodoro timer in the review pill, with breaks in between. Turn it on in **Settings → Review Pill**.
-- Hovering the pill shows one time: time left or your finish time, whichever you chose.
+- Bug fixes and improvements.
 
 In 1.9.3:
 

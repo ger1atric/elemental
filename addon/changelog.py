@@ -9,7 +9,7 @@ from __future__ import annotations
 RELEASES = [
     {"version": '1.9.4', "date": 'November 4, 2026', "notes": [
         ('Pomodoro timer', "A focus timer in the review pill, with breaks in between. Turn it on in Settings → Review Pill."),
-        ('Simpler review pill', "Hovering the pill shows one time: time left or your finish time, whichever you chose."),
+        ('Bug fixes and improvements', ""),
     ]},
     {"version": '1.9.3', "date": 'November 2, 2026', "notes": [
         ('New name', "Interactive Heatmap is now Elemental."),
