@@ -745,7 +745,8 @@ class DayWindow(QDialog):
             html_ = (f"<body style='font:13px -apple-system,sans-serif;padding:20px;color:#999'>"
                      f"This day couldn't be shown: {html.escape(str(e))}"
                      f"<pre style='font-size:11px'>{html.escape(traceback.format_exc())}</pre></body>")
-        self.web.setHtml(html_)
+        from . import lowpower
+        self.web.setHtml(lowpower.into(html_))
 
     def _on_cmd(self, cmd: str):
         if cmd.startswith("day:go:"):

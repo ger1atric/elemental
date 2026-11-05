@@ -13,6 +13,7 @@
   var KEY = "ret-marker-pos";
   var CSS = [
     ":host { all: initial; }",
+    ":host(.lite) .pill, :host(.lite) .panel { -webkit-backdrop-filter: none; backdrop-filter: none; }",
     ".hud { position: relative; font: 13px/1.3 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;",
     "  color: #e6edf6; -webkit-font-smoothing: antialiased; text-align: left; direction: ltr;",
     "  letter-spacing: normal; word-spacing: normal; text-transform: none; font-style: normal;",
@@ -325,6 +326,7 @@
              "pointer-events:none !important;" + p.corner;
       host.setAttribute("style", base);
       host.classList.toggle("light", !p.night);
+      host.classList.toggle("lite", !!p.lite);
       pill.innerHTML = (p.paused ? '<span class="pz"><i></i><i></i></span>' : "") + p.pill;
       pill.classList.toggle("drift", p.focus === "drift");
       pill.classList.toggle("paused", !!p.paused);

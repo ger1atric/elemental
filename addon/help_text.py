@@ -22,6 +22,7 @@ HELP = {
 
     # Theme
     "chk_glass": "Makes the box around the heatmap look like frosted glass, so the background softly shows through.",
+    "chk_low_power": "For slower computers. Turns off the frosted-glass blur and all animations, here and in the review pill.",
     "animations_combo": ("Little touches like the graph drawing itself in, or today's square glowing when you "
                          "finish. Follow system turns them off if your computer is set to reduce motion, and "
                          "Always plays them regardless."),
@@ -47,6 +48,7 @@ HELP = {
     "chk_modern": "Gives the deck list a fresh look, with rounded rows and colored badges for your New, Learning and Due counts.",
     "chk_deck_glass": "Puts your deck list in the same frosted-glass box as the heatmap.",
     "chk_ratio": "Adds a little ring next to each deck that fills in as you get through today's cards.",
+    "chk_count_pills": "Shows New, Learning and Due as colored pills. Turn it off for Anki's plain numbers.",
     "chk_replace": ("Hides Anki's own \"Studied 120 cards in 25 minutes today\" line, since the heatmap "
                     "already tells you that."),
 
@@ -130,7 +132,7 @@ HELP = {
                 "usual, and amber if it took longer. Cards you looked something up for don't get one."),
     "chk_rp_pomo": ("A countdown at the end of the pill. When a block ends, the break starts by itself, and "
                     "the next block starts when it's over. After the long break, a new set begins. Click the pill "
-                    "to pause a block or end a break early. Hover it to stop the timer, or start it again."),
+                    "to pause a block or end a break early. Hover it to end the session, or start a new one."),
     "chk_rp_pomo_pause": "The block only counts time on the review screen, so stepping away doesn't use it up.",
     "chk_rp_pomo_drift": ("When several cards in a row take much longer than usual, the pill offers a break "
                           "early. Needs Time Left turned on."),

@@ -33,7 +33,7 @@ except ImportError:
         QPolygonF = None
 
 ADDON_NAME = "Elemental"
-VERSION = "1.9.4"
+VERSION = "1.9.5"
 
 def _is_dark_mode():
     """Check if Anki is in dark mode."""
@@ -111,7 +111,7 @@ class WhatsNewDialog(QDialog):
         head = QHBoxLayout()
         head.setSpacing(14)
         head.addWidget(brand.LogoWidget(46, cfg.get("base_color", "#8e44ad"), night, animate=True,
-                                        motion=cfg.get("animations", "system")),
+                                        motion=lowpower.motion(cfg)),
                        0, Qt.AlignmentFlag.AlignVCenter)
         words = QVBoxLayout()
         words.setSpacing(2)
@@ -199,6 +199,7 @@ DEFAULT_CONFIG = {
     "border_radius": 2,
     "heatmap_width": 540,                   # the heatmap box, in px (540 to 900)
     "animations": "system",                 # deck list animations: system (off with reduce motion) | on | off
+    "low_power": False,                     # Low-power mode: no blur, no animations (lowpower.py)
     "heatmap_theme": "custom",            # custom ("My colors": the colors below) | a key of themes.THEMES
     "display_mode": "volume",
     "show_mode_time": True,              # Show Time Studied toggle button
@@ -215,6 +216,7 @@ DEFAULT_CONFIG = {
     "modern_deck_theme": True,
     "enable_deck_glass": True,
     "show_deck_ratio": True,
+    "deck_count_pills": True,              # New / Learning / Due as pills (off: Anki's plain numbers)
     "deck_list_width": 540,
     "replace_stats": True,
     "glass_opacity": 0.4,
@@ -1057,11 +1059,29 @@ _FSRS_FORECAST_CACHE = {}
 # keyed by revlog fingerprint so any new/undone review invalidates it.
 _REVLOG_AGG_CACHE = {}
 
+_cfg_held = None     # while the review pill builds: the config, read once (see hold_config)
+
+
 def get_config():
+    if _cfg_held is not None:
+        return dict(_cfg_held)
     conf = DEFAULT_CONFIG.copy()
     mgr_conf = mw.addonManager.getConfig(__name__)
     if mgr_conf: conf.update(mgr_conf)
     return themes.apply(conf, _is_dark_mode())
+
+
+def hold_config(on: bool) -> None:
+    """Anki reads the config from disk on every call, and one pill update asks for it
+    about 20 times; between hold_config(True) and hold_config(False) it's read once.
+    Only for code that reads the config, never writes it."""
+    global _cfg_held
+    _cfg_held = None
+    if on:
+        _cfg_held = get_config()
+
+
+get_config.hold = hold_config
 
 
 def get_saved_colors():
@@ -1094,6 +1114,8 @@ def _refresh_heatmap_screen():
 
 from . import time_left
 time_left.setup(get_config, write_config, __name__)
+from . import lowpower
+lowpower.setup(get_config)
 from . import review_pill
 from . import pomodoro
 review_pill.setup(get_config, write_config, __name__)
@@ -2723,6 +2745,13 @@ class HeatmapSettingsDialog(QDialog):
         anim_row.addStretch()
         hm_layout.addLayout(anim_row)
 
+        self.chk_low_power = QCheckBox("Low-power mode")
+        self.chk_low_power.setToolTip("For slower computers: no blur and no animations.")
+        self.chk_low_power.setChecked(bool(self.cfg.get("low_power", False)))
+        hm_layout.addWidget(self.chk_low_power)
+        self.chk_low_power.toggled.connect(lambda on: self.animations_combo.setEnabled(not on))
+        self.animations_combo.setEnabled(not self.chk_low_power.isChecked())
+
         slider_layout = QHBoxLayout()
         slider_layout.addWidget(QLabel("Glass Opacity:"))
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
@@ -2874,6 +2903,10 @@ class HeatmapSettingsDialog(QDialog):
         self.chk_ratio.setChecked(self.cfg.get("show_deck_ratio", True))
         sub_layout.addWidget(self.chk_ratio)
 
+        self.chk_count_pills = QCheckBox("Count pills")
+        self.chk_count_pills.setChecked(self.cfg.get("deck_count_pills", True))
+        sub_layout.addWidget(self.chk_count_pills)
+
         width_row = QHBoxLayout()
         width_row.addWidget(QLabel("Width:"))
         self.deck_width_slider = QSlider(Qt.Orientation.Horizontal)
@@ -2892,10 +2925,12 @@ class HeatmapSettingsDialog(QDialog):
 
         self.chk_modern.toggled.connect(self.chk_deck_glass.setEnabled)
         self.chk_modern.toggled.connect(self.chk_ratio.setEnabled)
+        self.chk_modern.toggled.connect(self.chk_count_pills.setEnabled)
         self.chk_modern.toggled.connect(self.deck_width_slider.setEnabled)
         self.chk_modern.toggled.connect(self.deck_width_label.setEnabled)
         self.chk_deck_glass.setEnabled(self.chk_modern.isChecked())
         self.chk_ratio.setEnabled(self.chk_modern.isChecked())
+        self.chk_count_pills.setEnabled(self.chk_modern.isChecked())
         self.deck_width_slider.setEnabled(self.chk_modern.isChecked())
         self.deck_width_label.setEnabled(self.chk_modern.isChecked())
 
@@ -4604,6 +4639,7 @@ class HeatmapSettingsDialog(QDialog):
         self.cfg['cell_shape'] = self.cell_shape_combo.currentData()
         self.cfg['heatmap_width'] = self.heatmap_width_slider.value()
         self.cfg['animations'] = self.animations_combo.currentData()
+        self.cfg['low_power'] = self.chk_low_power.isChecked()
         self.cfg['enable_browser_theme'] = self.chk_browser_theme.isChecked()
         self.cfg['enable_editor_theme'] = self.chk_editor_theme.isChecked()
         self.cfg['browser_color_theme'] = self.browser_theme_combo.currentData()
@@ -4621,6 +4657,7 @@ class HeatmapSettingsDialog(QDialog):
         self.cfg['modern_deck_theme'] = self.chk_modern.isChecked()
         self.cfg['enable_deck_glass'] = self.chk_deck_glass.isChecked()
         self.cfg['show_deck_ratio'] = self.chk_ratio.isChecked()
+        self.cfg['deck_count_pills'] = self.chk_count_pills.isChecked()
         self.cfg['deck_list_width'] = self.deck_width_slider.value()
         self.cfg['replace_stats'] = self.chk_replace.isChecked()
 
@@ -5465,16 +5502,17 @@ class FastEngine:
         Output rows use the exact same 10-tuple shape as _aggregate_revlog.
         """
         if deck_ids:
+            # Each of today's answers' deck, looked up: a join walks every card in the
+            # decks instead (~30 ms on AnKing, not ~1).
             did_list = ",".join(str(int(d)) for d in deck_ids)
-            deck_join = "JOIN cards c ON r.cid = c.id"
-            deck_where = f"AND c.did IN ({did_list})"
+            deck_where = f"AND (SELECT c.did FROM cards c WHERE c.id = r.cid) IN ({did_list})"
         else:
-            deck_join = deck_where = ""
+            deck_where = ""
 
         day_expr = f"strftime('%Y-%m-%d', (r.id - {rollover_ms}) / 1000, 'unixepoch', 'localtime')"
         today_rows = self.col.db.all(f"""
             SELECT r.id, r.cid, r.ease, r.time, r.type, {day_expr} AS day
-            FROM revlog r {deck_join}
+            FROM revlog r
             WHERE r.type < 4 AND r.id >= {int(id_lo)} {deck_where}
             ORDER BY r.id
         """)
@@ -5539,8 +5577,12 @@ class FastEngine:
                                           exclude_idle, idle_threshold_ms)
         # Historical fingerprint only changes if pre-today rows change (e.g.
         # undoing a review from an earlier day), so this cache holds all day.
+        # (Counted as all rows minus today's: SQLite counts a whole table from its
+        # page counts, but a range row by row — ~1 ms instead of ~10-30.)
         hist_fp = tuple(self.col.db.first(
-            f"SELECT MAX(id), COUNT(*) FROM revlog WHERE id < {today_start_ms}") or (0, 0))
+            f"SELECT (SELECT MAX(id) FROM revlog WHERE id < {today_start_ms}), "
+            f"(SELECT COUNT(*) FROM revlog) - (SELECT COUNT(*) FROM revlog WHERE id >= {today_start_ms})")
+            or (0, 0))
         hist_key = (
             tuple(deck_ids) if deck_ids else None,
             bool(exclude_new), bool(exclude_idle), idle_threshold_ms,
@@ -5675,11 +5717,11 @@ class FastEngine:
         for did, cnt in rows: add_stat(did, 'd', cnt)
 
         today_start_ts = int(day_cutoff - 86400) * 1000
+        # Today's cards first, then each one looked up (a join walks every card instead).
         done_rows = self.col.db.all(f"""
-            SELECT c.did, count(DISTINCT c.id) 
-            FROM revlog r 
-            JOIN cards c ON r.cid = c.id 
-            WHERE r.id > {today_start_ts} 
+            SELECT c.did, count()
+            FROM cards c
+            WHERE c.id IN (SELECT cid FROM revlog WHERE id > {today_start_ts})
             AND (
                 (c.queue IN (2, 3) AND c.due > {today_int})
                 OR
@@ -5772,7 +5814,7 @@ class FastEngine:
             period_start = start_date
 
         period_revs = sum(v for k, v in history.items()
-                         if datetime.datetime.strptime(k, "%Y-%m-%d").date() >= period_start)
+                         if datetime.date.fromisoformat(k) >= period_start)
         period_days = max(1, (today_date - period_start).days + 1)
         daily_avg = int(period_revs / period_days)
         
@@ -5790,7 +5832,7 @@ class FastEngine:
 
         streak = 0
         dates = sorted(history.keys())
-        ords = [datetime.datetime.strptime(d, "%Y-%m-%d").toordinal() for d in dates]
+        ords = [datetime.date.fromisoformat(d).toordinal() for d in dates]
         today_ord = today_date.toordinal()
         if ords and (today_ord - ords[-1]) <= 1:
             streak = 1
@@ -6665,8 +6707,26 @@ def setup_timer():
     refresh_timer.timeout.connect(on_refresh_timer)
     refresh_timer.start(interval)
 
+_drawn_key = None      # _refresh_key() when the deck list's heatmap was last drawn
+
+
+def _refresh_key():
+    """What the deck list's heatmap is drawn from: the collection's last change, the
+    latest answer, the Anki day and the theme. While it's the same, the minute's refresh
+    has nothing new to show."""
+    try:
+        mod_, last = mw.col.db.first("SELECT (SELECT mod FROM col), (SELECT MAX(id) FROM revlog)")
+        return (mod_, last, mw.col.sched.today, _is_dark_mode())
+    except Exception:
+        return None
+
+
 def on_refresh_timer():
+    global _drawn_key
     if mw.state == "deckBrowser":
+        key = _refresh_key()
+        if key is not None and key == _drawn_key:
+            return
         try:
             # Same scope as the deck screen, and never the slow parts: if they're
             # missing, warm them and leave the current heatmap up until next time.
@@ -6680,6 +6740,7 @@ def on_refresh_timer():
             safe_html = json.dumps(html_body)
             js = f"var root = document.getElementById('heatmap-root'); if(root) {{ root.outerHTML = {safe_html}; if(window.initHeatmap) window.initHeatmap(); }}"
             mw.deckBrowser.web.eval(js)
+            _drawn_key = key
         except: pass
 
 def _exam_countdown(exam_days, today_str, ahead_days=14):
@@ -6709,7 +6770,7 @@ def _streak_runs(hist):
     out, run, prev = [], 0, None
     for d in sorted(k for k, v in hist.items() if v):
         try:
-            o = datetime.datetime.strptime(d, "%Y-%m-%d").toordinal()
+            o = datetime.date.fromisoformat(d).toordinal()
         except ValueError:
             continue
         run = run + 1 if prev is not None and o == prev + 1 else 1
@@ -6937,7 +6998,7 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
     _bnight = _is_dark_mode()
     loadmark_html = ""
     if eng.missing:
-        _still = brand.still_js(cfg.get('animations', 'system'))
+        _still = brand.still_js(lowpower.motion(cfg))
         loadmark_html = (
             f'<div class="hm-loadmark" id="hm-loadmark">{brand.svg(base_c, _bnight, 16)}'
             f'<span>Loading your history</span></div>'
@@ -7171,7 +7232,7 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
         d_nice = curr.strftime("%b %d").upper()
         count = hist.get(d_s, 0)
         is_today = (d_s == today_str)
-        is_fut = (curr > datetime.datetime.strptime(today_str, "%Y-%m-%d").date())
+        is_fut = curr > _today_dt
         exam_list = exam_days.get(d_s, [])
         is_exam = len(exam_list) > 0
 
@@ -7271,9 +7332,8 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
             today_c = cfg.get('today_color', '#2ecc71')
             outline = f"2px solid {today_c}"
 
-        click_cmd = f"heatmap:note:{d_s}"
         today_id = ' id="hm-today"' if is_today else ''
-        cells_html += f'<div{today_id} class="cell tooltip-target" style="background:{rgba_bg}; opacity:1.0; border:{border}; outline:{outline}; outline-offset:-1px;" onclick="pycmd(\'{click_cmd}\')" data-tooltip="{safe_tooltip}" data-legend="{safe_legend}" data-bgs="{bgs_attr}">{inner_content}</div>'
+        cells_html += f'<div{today_id} class="cell tooltip-target" style="background:{rgba_bg}; opacity:1.0; border:{border}; outline:{outline}; outline-offset:-1px;" onclick="pycmd((event.ctrlKey || event.metaKey ? \'heatmap:browse:\' : \'heatmap:note:\') + \'{d_s}\')" data-tooltip="{safe_tooltip}" data-legend="{safe_legend}" data-bgs="{bgs_attr}">{inner_content}</div>'
         curr += timedelta(days=1)
 
     if total_mins >= 60:
@@ -7329,7 +7389,7 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
     focus_btn_html = f'<div class="toggle-opt {focus_class}" data-mode="focus" onclick="hmSetMode(\'focus\')">FOCUS</div>' \
                     if focus_days else ""
     stats_link_html = ('<div class="stats-link" onclick="pycmd(\'heatmap:stats\')" title="Your stats over weeks and months"'
-                       ' onmouseenter="window.hmLogoTurn&&hmLogoTurn(this.querySelector(\'svg\'),' + _html.escape(brand.still_js(cfg.get('animations', 'system'))) + ')">'
+                       ' onmouseenter="window.hmLogoTurn&&hmLogoTurn(this.querySelector(\'svg\'),' + _html.escape(brand.still_js(lowpower.motion(cfg))) + ')">'
                        + brand.svg(base_c, _bnight, 12, 'hm-stats-logo') + 'STATS</div>'
                        + '<script>' + brand.TURN_SCRIPT + '</script>'
                        if stats_view.available() else "")
@@ -7500,6 +7560,7 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
         .badge-new {{ color: {pill_new}; background: {pill_new}38; border: 1px solid {pill_new}80; }}
         .badge-lrn {{ color: {pill_learn}; background: {pill_learn}38; border: 1px solid {pill_learn}80; }}
         .badge-due {{ color: {pill_due}; background: {pill_due}38; border: 1px solid {pill_due}80; }}
+        {PLAIN_COUNTS_CSS if not cfg.get("deck_count_pills", True) else ""}
         .activity-ring-svg {{
             width: 24px;
             height: 24px;
@@ -7712,7 +7773,7 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
                 const i = modes.indexOf(mode);
                 if (i < 0) return;
                 // The colors fade across (0.2 s) rather than snap, unless motion is off
-                const anim = {json.dumps(cfg.get('animations', 'system'))};
+                const anim = {json.dumps(lowpower.motion(cfg))};
                 const still = window.hmStill ? window.hmStill() : (anim === 'off' ||
                     (anim === 'system' && !!window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches));
                 const root = document.getElementById('heatmap-root');
@@ -8484,12 +8545,13 @@ def _row_enter_css(mode):
 
 
 def render(deck_browser, content):
+    global _drawn_key
     cfg = get_config()
     setup_timer()
 
-    hide_studied_css = ""
+    hide_studied_css = lowpower.style(cfg)
     if cfg.get('replace_stats', True):
-        hide_studied_css = "<style>#studiedToday { display: none !important; }</style>"
+        hide_studied_css += "<style>#studiedToday { display: none !important; }</style>"
 
     # Done for today: nothing left in any deck, after studying some today.
     done = False
@@ -8514,11 +8576,11 @@ def render(deck_browser, content):
         rows = _ROW_ID.findall(content.tree or "")
         shown = set(_last_rows or ())
         new = [r for r in rows if r not in shown]
-        if (_last_rows and new and shown.issubset(rows) and cfg.get('animations', 'system') != 'off'):
+        if (_last_rows and new and shown.issubset(rows) and lowpower.motion(cfg) != 'off'):
             new = set(new)
             content.tree = _ROW_ID.sub(lambda mo: mo.group(0).replace("class='deck", "class='deck hm-enter", 1)
                                        if mo.group(1) in new else mo.group(0), content.tree)
-            hide_studied_css += _row_enter_css(cfg.get('animations', 'system'))
+            hide_studied_css += _row_enter_css(lowpower.motion(cfg))
         _last_rows = rows
     except Exception:
         pass
@@ -8539,6 +8601,9 @@ def render(deck_browser, content):
 
     try:
         heatmap_html = _heatmap_html("deckBrowser", _refresh_deck_browser, **_main_heatmap_args(cfg))
+        # Drawn in full: the minute's refresh can skip until something changes. (A
+        # dimmed placeholder or a forecast still renewing leaves it on.)
+        _drawn_key = None if "deckBrowser" in _PLACEHOLDER or "deckBrowser" in _WARMING else _refresh_key()
         existing = content.stats or ""
 
         # The deck list's animations, only on one with final numbers (not the dimmed one
@@ -8550,10 +8615,10 @@ def render(deck_browser, content):
                 rolls = (cfg.get("streak_display", "streak") not in ("pct_week", "pct_month")
                          and cfg.get("show_stats_bar", True) and f.get("today_revs", 0) > 0)
                 moments_css = moments.deck_browser(str(mw.col.sched.today), done, cfg.get('today_color', '#2ecc71'),
-                                                   cfg.get('animations', 'system'),
+                                                   lowpower.motion(cfg),
                                                    streak=int(f.get("streak", 0) or 0) if rolls else 0,
                                                    longest=_longest_streak(f.get("hist") or {}) if rolls else 0)
-                if cfg.get('animations', 'system') != 'off':
+                if lowpower.motion(cfg) != 'off':
                     moments_css += time_left.finish_roll()
                 else:
                     time_left.finish_roll()     # still remember what this deck list shows
@@ -8562,7 +8627,7 @@ def render(deck_browser, content):
             # last deck list's counts, for the ones that went down to tick down
             global _last_counts
             if counts:
-                if _last_counts and _last_counts != counts and cfg.get('animations', 'system') != 'off':
+                if _last_counts and _last_counts != counts and lowpower.motion(cfg) != 'off':
                     moments_css += f"<script>window.hmPrevCounts = {json.dumps(_last_counts)};</script>"
                 _last_counts = counts
 
@@ -8620,6 +8685,9 @@ def on_msg(h, m, c):
     if m == "heatmap:stats":
         _open_stats()
         return True, None
+    if m.startswith("heatmap:browse:"):
+        _browse_day(m.split(":")[2])
+        return True, None
     if m.startswith("heatmap:note:"):
         date_str = m.split(":")[2]
         if day_view.available() and _open_day_view(date_str):
@@ -8654,6 +8722,28 @@ def _open_day_view(date_str):
     except Exception:
         _log_exc()
         return False
+
+
+def _browse_day(date_str):
+    """Ctrl/Cmd-click on a day: the Browser with the cards due that day (today: everything
+    due now), or for a past day the cards you answered, in the heatmap's decks."""
+    try:
+        roll = int(mw.col.get_config("rollover", 4))
+        today = (datetime.datetime.now() - datetime.timedelta(hours=roll)).date()
+        n = (datetime.date.fromisoformat(date_str) - today).days
+        if n > 0:
+            query = f"prop:due={n}"
+        elif n == 0:
+            query = "is:due"
+        else:
+            query = f"prop:rated={n}"
+        deck_ids, _scope = _heatmap_scope()
+        if deck_ids:
+            query = f"did:{','.join(str(int(d)) for d in deck_ids)} {query}"
+        browser = aqt.dialogs.open("Browser", mw)
+        browser.search_for(query)
+    except Exception:
+        _log_exc()
 
 
 def _open_stats():
@@ -8831,7 +8921,9 @@ def render_overview(overview, content):
     setTimeout(applyOvPills, 80);
 }})();
 </script>"""
-    content.table = (content.table or "") + pill_inject
+    if not cfg.get("deck_count_pills", True):     # Anki's own plain numbers: keep only the layout fixes
+        pill_inject = pill_inject[:pill_inject.index("<script>")]
+    content.table = (content.table or "") + pill_inject + lowpower.style(cfg)
 
     if not cfg.get('show_overview_heatmap', True):
         return
@@ -8887,6 +8979,17 @@ from aqt import mw, gui_hooks
 from aqt.qt import *
 from anki.cards import Card
 import re
+
+# Count pills off: the counts look like Anki's own (its colors, plain text, faint zeros).
+PLAIN_COUNTS_CSS = """
+        .stat-badge { padding: 0; width: auto; min-width: 0; border-radius: 0; font-size: 14px; font-weight: 400;
+                      background: none !important; border: none !important; }
+        .badge-new { color: var(--state-new, #3b82f6); }
+        .badge-lrn { color: var(--state-learn, #dc2626); }
+        .badge-due { color: var(--state-review, #16a34a); }
+        .badge-dim { color: var(--fg-faint, #afafaf); opacity: 1; }
+"""
+
 
 class ModernBrowserDelegate(QStyledItemDelegate):
     def __init__(self, browser, theme_color="#8e44ad"):

@@ -7,6 +7,9 @@ __init__.py to match.
 from __future__ import annotations
 
 RELEASES = [
+    {"version": '1.9.5', "date": 'November 5, 2026', "notes": [
+        ('Bug fixes and speed improvements', ""),
+    ]},
     {"version": '1.9.4', "date": 'November 4, 2026', "notes": [
         ('Pomodoro timer', "A focus timer in the review pill, with breaks in between. Turn it on in Settings → Review Pill."),
         ('Bug fixes and improvements', ""),

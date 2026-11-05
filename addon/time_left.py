@@ -810,7 +810,14 @@ def _run_accuracy() -> None:
                 pass
         _render_accuracy()
 
-    _background(lambda: accuracy.run(path, cutoff, desk, pause=lambda: mw.state == "review"), done)
+    # Days scored by the last run (same model code and desk setting) are reused.
+    prev = _acc_load()
+    same = str(prev.get("key", "")).rsplit("|", 3)
+    mine = key.rsplit("|", 3)
+    cache = None
+    if len(same) == 4 and same[0] == mine[0] and same[2:] == mine[2:]:
+        cache = (prev.get("result") or {}).get("day_cache")
+    _background(lambda: accuracy.run(path, cutoff, desk, pause=lambda: mw.state == "review", cache=cache), done)
 
 
 def _alive(d) -> bool:
@@ -841,6 +848,8 @@ def _render_accuracy() -> None:
         html = (f"<body style='font:13px -apple-system,sans-serif;padding:20px;color:#999;background:"
                 f"{'#1f1f1f' if _is_night() else '#fff'}'>The accuracy page couldn't be drawn: "
                 f"{_h.escape(str(e))}<pre style='font-size:11px'>{_h.escape(traceback.format_exc())}</pre></body>")
+    from . import lowpower
+    html = lowpower.into(html)
     if AnkiWebView is not None:
         d.web.setHtml(html)
     else:

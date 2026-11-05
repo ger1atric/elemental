@@ -66,11 +66,11 @@ def setup(get_config, write_config, addon_name: str) -> None:
     gui_hooks.reviewer_did_show_question.append(_on_show_question)
     gui_hooks.reviewer_will_end.append(_remove_marker)
     gui_hooks.profile_did_open.append(_migrate)
-    time_left.listeners.append(_update_marker)
+    time_left.listeners.append(_schedule_update)
     from . import focus_log
-    focus_log.listeners.append(_update_marker)     # the card on screen was left out of focus, or counted again
+    focus_log.listeners.append(_schedule_update)   # the card on screen was left out of focus, or counted again
     pomodoro.setup(get_config)
-    pomodoro.listeners.append(_update_marker)      # a break offered, started, ended
+    pomodoro.listeners.append(_schedule_update)    # a break offered, started, ended
 
 
 def _raw() -> dict:
@@ -553,7 +553,7 @@ def _build_payload() -> dict | None:
         return None
     from . import focus_log
     return {"pill": pill, "panel": "".join(panel), "night": night, "focus": "drift" if drift else "",
-            "ring": _ring(cfg), "paused": focus_log.marked(),
+            "ring": None if _low_power() else _ring(cfg), "paused": focus_log.marked(), "lite": _low_power(),
             "pomo": pomo_bits["cls"] if pomo_bits else "", "pomo_title": pomo_bits["title"] if pomo_bits else ""}
 
 
@@ -598,7 +598,7 @@ def _pomo_act(act: str, text: str, night: bool) -> str:
 
 
 def _pomo_stop(night: bool) -> str:
-    return f'<div class="row" style="margin-top:6px;"><span></span>{_pomo_act("stop", "Stop timer", night)}</div>'
+    return f'<div class="row" style="margin-top:6px;"><span></span>{_pomo_act("stop", "End session", night)}</div>'
 
 
 _block_cache = {}
@@ -693,6 +693,11 @@ def _pomo_bits(st: dict, night: bool, drift: bool) -> dict | None:
 
 
 RING_FRESH_MS = 5000        # ring only for an answer this recent (not after undo or a pause)
+
+
+def _low_power() -> bool:
+    """Low-power mode (lowpower.py): no blur behind the pill, no ring after each answer."""
+    return bool(_raw().get("low_power", False))
 
 
 def _ring(cfg: dict) -> dict | None:
@@ -1074,6 +1079,33 @@ def _fmt_clock(dt: datetime.datetime) -> str:
 # ──────────────────────────────────────────────────────────────
 # Reviewer marker
 # ──────────────────────────────────────────────────────────────
+_pending = False
+
+
+def _schedule_update() -> None:
+    """Update the pill once the current event is done. Answering a card fires the answer
+    hook and then the next card's question hook in the same pass, so the two share one
+    update instead of building the pill twice."""
+    global _pending
+    if _pending:
+        return
+    _pending = True
+    QTimer.singleShot(0, _run_update)
+
+
+def _run_update() -> None:
+    global _pending
+    _pending = False
+    hold = getattr(_get_config, "hold", None)
+    if hold:
+        hold(True)
+    try:
+        _update_marker()
+    finally:
+        if hold:
+            hold(False)
+
+
 def _update_marker() -> None:
     if not enabled() or mw.state != "review" or mw.reviewer is None or mw.reviewer.web is None:
         return
@@ -1102,12 +1134,12 @@ def _on_answer(reviewer, card, ease: int) -> None:
     # Defer until after Anki has advanced to the next card (or moved to the
     # overview when finished). _update_marker then either refreshes the number
     # for the next card or removes the marker if there's no card left.
-    QTimer.singleShot(0, _update_marker)
+    _schedule_update()
 
 
 def _on_show_question(card) -> None:
     # Webview reloads each card, wiping the marker div — re-inject.
-    _update_marker()
+    _schedule_update()
 
 
 # ──────────────────────────────────────────────────────────────

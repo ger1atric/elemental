@@ -893,7 +893,8 @@ def _head(rng: str, sub: str, cfg: dict = None, night: bool = False) -> str:
 def loading_page(rng: str, night: bool, cfg: dict, backdrop, glass, scope: str) -> str:
     from . import brand
     _, css = _css(night, cfg, backdrop, glass)
-    still = brand.still_js(cfg.get("animations", "system"))
+    from . import lowpower
+    still = brand.still_js(lowpower.motion(cfg))
     spin = brand.svg(cfg.get("base_color", "#8e44ad"), night, 40, style="margin:0 auto 10px")
     return (f"<!doctype html><html><head><meta charset=utf-8><style>{css}</style></head><body>"
             f"{_head(rng, html.escape(scope), cfg, night)}<div class='glass empty' id='hm-load'>{spin}Loading…</div>"
@@ -1028,7 +1029,8 @@ class StatsWindow(QDialog):
         req = self._req
         cfg = _get_config()
         night, backdrop, glass = time_left._is_night(), time_left._backdrop(), time_left._glass_opacity()
-        self.web.setHtml(loading_page(rng, night, cfg, backdrop, glass, scope))
+        from . import lowpower
+        self.web.setHtml(lowpower.into(loading_page(rng, night, cfg, backdrop, glass, scope)))
         m = time_left._get_model() if time_left.enabled() else None
         if m is not None and not m.mu:
             m = None
@@ -1044,7 +1046,7 @@ class StatsWindow(QDialog):
                 html_ = (f"<body style='font:13px -apple-system,sans-serif;padding:20px;color:#999'>"
                          f"Stats couldn't be shown: {html.escape(str(e))}"
                          f"<pre style='font-size:11px'>{html.escape(traceback.format_exc())}</pre></body>")
-            self.web.setHtml(html_)
+            self.web.setHtml(lowpower.into(html_))
 
         mw.taskman.run_in_background(lambda: collect(rng, deck_ids, cfg, m, path, ro), done)
 

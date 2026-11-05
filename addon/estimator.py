@@ -719,14 +719,41 @@ def _pace_nodes(m: Model, res: list) -> list:
     return [mean + sd * z for z in _Z]
 
 
-def _retrievability(data: str, last_s, now: float, default: float) -> float:
+_mem_cache = {}      # card id -> (its data text, (stability, decay, last review) or None)
+
+
+def _memory(cid: int, data: str):
+    """The card's FSRS memory state from its data, parsed once while it stays the same
+    (a due card's data only changes when you answer it)."""
+    hit = _mem_cache.get(cid)
+    if hit is not None and hit[0] == data:
+        return hit[1]
     try:
         d = json.loads(data or "{}")
-        s = float(d["s"])
+        mem = (float(d["s"]), float(d.get("decay", 0.5) or 0.5), d.get("lrt"))
     except Exception:
-        return default
-    decay = float(d.get("decay", 0.5) or 0.5)
-    last = d.get("lrt") or last_s
+        mem = None
+    if len(_mem_cache) > 200_000:
+        _mem_cache.clear()
+    _mem_cache[cid] = (data, mem)
+    return mem
+
+
+def _retrievability(data: str, last_s, now: float, default: float, cid=None) -> float:
+    if cid is not None:
+        mem = _memory(cid, data)
+        if mem is None:
+            return default
+        s, decay, lrt = mem
+    else:
+        try:
+            d = json.loads(data or "{}")
+            s = float(d["s"])
+        except Exception:
+            return default
+        decay = float(d.get("decay", 0.5) or 0.5)
+        lrt = d.get("lrt")
+    last = lrt or last_s
     if not last or s <= 0:
         return default
     factor = 0.9 ** (-1 / decay) - 1
@@ -777,20 +804,40 @@ def card_costs(m: Model, conn, today: int, cutoff: int, now: float, ds: list, di
     scale = [math.exp(d - m.pool_level) for d in ds]
     m0, m1 = m.mu.get(("review", 0), 1.9), m.mu.get(("review", 1), 2.3)
     L1, L2 = m.lapse
+    t1, t2, top = m.table1, m.table2, GRID_N - 1
+    nodes = list(zip(range(len(ds)), ds, scale))
     out = {}
     for cid, did, data, last in reviews:
-        p = 1 - _retrievability(data, last, now, 1 - m.fail_rate)
+        p = 1 - _retrievability(data, last, now, 1 - m.fail_rate, cid)
+        q = 1 - p
         b = m.card_eff.get(cid, 0.0)
         c = out.setdefault(did, (Cost(), Cost()))[0]
         c.n += 1
-        for k, d in enumerate(ds):
-            e1p, e2p = _table(m, m0 + b + d)
-            e1f, e2f = _table(m, m1 + b + d)
-            s = scale[k]
-            mean = (1 - p) * e1p + p * (e1f + s * L1)
-            m2 = (1 - p) * e2p + p * (e2f + 2 * e1f * s * L1 + s * s * L2)
-            c.mean[k] += mean
-            c.var[k] += max(m2 - mean * mean, 0.0)
+        cm, cv = c.mean, c.var
+        for k, d, s in nodes:
+            # _table(m, x) for the pass and the fail time, inlined: this runs for every
+            # due card at every pace node, on each card you answer.
+            f = (m0 + b + d - GRID_LO) / GRID_STEP
+            if f <= 0:
+                e1p, e2p = t1[0], t2[0]
+            elif f >= top:
+                e1p, e2p = t1[-1], t2[-1]
+            else:
+                i = int(f); w = f - i
+                e1p, e2p = t1[i] + (t1[i + 1] - t1[i]) * w, t2[i] + (t2[i + 1] - t2[i]) * w
+            f = (m1 + b + d - GRID_LO) / GRID_STEP
+            if f <= 0:
+                e1f, e2f = t1[0], t2[0]
+            elif f >= top:
+                e1f, e2f = t1[-1], t2[-1]
+            else:
+                i = int(f); w = f - i
+                e1f, e2f = t1[i] + (t1[i + 1] - t1[i]) * w, t2[i] + (t2[i + 1] - t2[i]) * w
+            sl = s * L1
+            mean = q * e1p + p * (e1f + sl)
+            m2 = q * e2p + p * (e2f + 2 * e1f * sl + s * s * L2)
+            cm[k] += mean
+            cv[k] += max(m2 - mean * mean, 0.0)
     X1, X2 = m.learn
     for cid, did in learning:
         f = math.exp(m.card_eff.get(cid, 0.0))
@@ -888,10 +935,12 @@ def corrected(s: dict, progress: float, left: float, table: list) -> dict:
 def done_today(conn, cutoff: int, dids=None) -> float:
     """Seconds Anki recorded on today's answers so far (capped like the model's), in
     every deck or only in these deck ids."""
-    sql, args = "SELECT SUM(MIN(r.time, ?)) FROM revlog r", [int(CAP * 1000)]
+    sql = "SELECT SUM(MIN(r.time, ?)) FROM revlog r WHERE r.id >= ? AND r.type < 4 AND r.time > 0"
+    args = [int(CAP * 1000), (cutoff - 86400) * 1000]
     if dids is not None:
-        sql += f" JOIN cards c ON c.id = r.cid AND c.did IN ({','.join('?' * len(dids))})"
+        # Look up each of today's answers' deck. A join walks every card in the decks
+        # instead and probes its reviews: ~30 ms on AnKing, not ~0.5.
+        sql += f" AND (SELECT c.did FROM cards c WHERE c.id = r.cid) IN ({','.join('?' * len(dids))})"
         args += [int(d) for d in dids]
-    sql += " WHERE r.id >= ? AND r.type < 4 AND r.time > 0"
-    v = conn.execute(sql, args + [(cutoff - 86400) * 1000]).fetchone()[0]
+    v = conn.execute(sql, args).fetchone()[0]
     return (v or 0) / 1000.0

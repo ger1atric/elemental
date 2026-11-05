@@ -11,8 +11,9 @@ Per point it reports:
   • caught    share of days whose actual time fell in the 80% range
 
 Pure Python and read-only (estimator.connect), so it can run off the main
-thread. Fitting a model per day takes about a minute in all; `pause` lets the
-caller hold it while you review.
+thread. Fitting a model per day takes about a minute in all, so each day's points
+are kept (run's cache) and only new or changed days are fitted again; `pause` lets
+the caller hold it while you review.
 
 One simplification: the revlog doesn't keep each card's past FSRS recall
 probability, so every review is costed at your recent fail rate. The live
@@ -79,12 +80,42 @@ def _rest_cost(m, rest, seen, ds):
     return work
 
 
-def run(path: str, cutoff: int, desk: bool = True, pause=None) -> dict | None:
-    """Backtest the days before `cutoff`. None if there aren't enough of them."""
+def _fingerprints(conn, cutoff: int) -> dict:
+    """{back: [answers, id sum, deck sum]} of every scored answer before each backtest
+    day's end. A day's result depends only on the answers before its end (its model and
+    the day itself), so while these stay the same the day needn't be scored again;
+    answers synced in from another device, deleted cards or cards moved to another deck
+    change them."""
+    lo = cutoff - BACKTEST_DAYS * 86400
+    q = ("SELECT COUNT(*), TOTAL(r.id % 1000000007), TOTAL(c.did % 1000000007) FROM revlog r "
+         "JOIN cards c ON c.id = r.cid WHERE r.type < 4 AND r.time > 0 AND r.id < ?")
+    acc = [int(v or 0) for v in conn.execute(q, (lo * 1000,)).fetchone()]
+    buckets = {int(j): (int(n), int(a or 0), int(b or 0)) for j, n, a, b in conn.execute(
+        "SELECT (r.id / 1000 - ?) / 86400, COUNT(*), TOTAL(r.id % 1000000007), TOTAL(c.did % 1000000007) "
+        "FROM revlog r JOIN cards c ON c.id = r.cid WHERE r.type < 4 AND r.time > 0 "
+        "AND r.id >= ? AND r.id < ? GROUP BY 1", (lo, lo * 1000, (cutoff - 86400) * 1000))}
+    out = {BACKTEST_DAYS: list(acc)}
+    for j in range(BACKTEST_DAYS - 1):           # day j ends where back = BACKTEST_DAYS - j - 1 ends
+        n, a, b = buckets.get(j, (0, 0, 0))
+        acc = [acc[0] + n, acc[1] + a, acc[2] + b]
+        out[BACKTEST_DAYS - j - 1] = list(acc)
+    return out
+
+
+def run(path: str, cutoff: int, desk: bool = True, pause=None, cache: dict | None = None) -> dict | None:
+    """Backtest the days before `cutoff`. None if there aren't enough of them.
+
+    cache: the "day_cache" of an earlier run with the same model code and desk setting.
+    Days already scored there, with the same answers before them, are taken as they
+    are, so a daily run only fits the new day (a second or two, not a minute or more)."""
+    cache = cache or {}
+    new_cache = {}
     conn = E.connect(path)
     try:
         tops = {int(d): str(n).split("\x1f")[0] for d, n in conn.execute("SELECT id, name FROM decks")}
-        first = dict(conn.execute("SELECT cid, MIN(id) FROM revlog WHERE type < 4 GROUP BY cid"))
+        names = str(sorted(tops.items()))
+        fps = _fingerprints(conn, cutoff)
+        first = None            # every card's first answer, read when a day needs scoring
         points, dates = [], []
         # A day counts if it's at least a fifth of your usual day (and MIN_ANSWERS):
         # tiny days of a heavy reviewer would only add noise; light reviewers keep theirs.
@@ -94,44 +125,34 @@ def run(path: str, cutoff: int, desk: bool = True, pause=None) -> dict | None:
         active = sorted(c for c in counts if c)
         min_answers = max(MIN_ANSWERS, active[len(active) // 2] / 5) if active else MIN_ANSWERS
         for back in range(1, BACKTEST_DAYS + 1):
-            while pause and pause():
-                time.sleep(5)
             cut = cutoff - back * 86400
-            rows = conn.execute(
-                "SELECT r.id, r.cid, r.ease, r.time, r.type, c.did FROM revlog r "
-                "JOIN cards c ON c.id = r.cid WHERE r.type < 4 AND r.time > 0 "
-                "AND r.id >= ? AND r.id < ? ORDER BY r.id", ((cut - 86400) * 1000, cut * 1000)).fetchall()
-            if len(rows) < min_answers:
-                continue
-            m = E._fit(conn, cut)
-            if not m.mu:
-                continue
-            factor = m.wall if desk else 1.0
-            ans, prev = [], None
-            for rid, cid, ease, ms, rtype, did in rows:
-                t = min(ms / 1000, E.CAP)
-                gap = (rid - prev) / 1000 if prev else t
-                kind = E._kind(rtype, E._day(rid, cut), E._day(first.get(cid, rid), cut))
-                mu = m.mu.get((kind, int(ease == 1)))
-                ans.append({"cid": cid, "kind": kind, "top": tops.get(did, ""), "t": t,
-                            "left": (gap if gap < 180 else t) if desk else t,
-                            "res": None if mu is None else math.log(t) - mu - m.card_eff.get(cid, 0.0)})
-                prev = rid
-            for f in FRACS + END_FRACS:
-                n0 = int(f * len(ans))
-                done, rest = ans[:n0], ans[n0:]
-                actual = sum(a["left"] for a in rest)
-                if actual < MIN_LEFT:
+            fp = fps[back] + [names]
+            hit = cache.get(str(cut))
+            if hit is not None and hit.get("fp") == fp:
+                new_cache[str(cut)] = hit
+                if hit["n"] < min_answers or not hit["ok"]:
                     continue
-                ds = E._pace_nodes(m, [a["res"] for a in done if a["res"] is not None])
-                s = E.summarize(_rest_cost(m, rest, {a["cid"] for a in done}, ds), factor)
-                if s["mean"] > 0:
-                    points.append({"day": len(dates), "date": cut - 86400, "f": f,
-                                   "pred": s["mean"], "lo": s["lo"],
-                                   "hi": s["hi"], "act": actual,
-                                   "done": sum(a["t"] for a in done) * factor})
+                day_points = hit["points"]
+            else:
+                while pause and pause():
+                    time.sleep(5)
+                rows = conn.execute(
+                    "SELECT r.id, r.cid, r.ease, r.time, r.type, c.did FROM revlog r "
+                    "JOIN cards c ON c.id = r.cid WHERE r.type < 4 AND r.time > 0 "
+                    "AND r.id >= ? AND r.id < ? ORDER BY r.id", ((cut - 86400) * 1000, cut * 1000)).fetchall()
+                if len(rows) < min_answers:
+                    continue            # not cached: a lower bar another day may score it
+                if first is None:
+                    first = dict(conn.execute("SELECT cid, MIN(id) FROM revlog WHERE type < 4 GROUP BY cid"))
+                m = E._fit(conn, cut)
+                day_points = _score_day(m, rows, first, tops, cut, desk) if m.mu else []
+                new_cache[str(cut)] = {"fp": fp, "n": len(rows), "ok": bool(m.mu), "points": day_points}
+                if not m.mu:
+                    continue
+                time.sleep(0.05)    # breathe between fits
+            for q in day_points:
+                points.append(dict(q, day=len(dates)))
             dates.append(cut - 86400)
-            time.sleep(0.05)    # breathe between fits
     finally:
         conn.close()
 
@@ -139,7 +160,35 @@ def run(path: str, cutoff: int, desk: bool = True, pause=None) -> dict | None:
         return None
     return {"raw": score(points), "fixed": score(points, held_out=True), "days_list": scatter(points),
             "calib": calibration(points), "points": points, "days": len(dates),
-            "first": min(dates), "last": max(dates), "desk": desk, "computed": time.time()}
+            "first": min(dates), "last": max(dates), "desk": desk, "computed": time.time(),
+            "day_cache": new_cache}
+
+
+def _score_day(m, rows, first: dict, tops: dict, cut: int, desk: bool) -> list:
+    """One past day's points: at each checkpoint, the predicted and the real time left."""
+    factor = m.wall if desk else 1.0
+    ans, prev, out = [], None, []
+    for rid, cid, ease, ms, rtype, did in rows:
+        t = min(ms / 1000, E.CAP)
+        gap = (rid - prev) / 1000 if prev else t
+        kind = E._kind(rtype, E._day(rid, cut), E._day(first.get(cid, rid), cut))
+        mu = m.mu.get((kind, int(ease == 1)))
+        ans.append({"cid": cid, "kind": kind, "top": tops.get(did, ""), "t": t,
+                    "left": (gap if gap < 180 else t) if desk else t,
+                    "res": None if mu is None else math.log(t) - mu - m.card_eff.get(cid, 0.0)})
+        prev = rid
+    for f in FRACS + END_FRACS:
+        n0 = int(f * len(ans))
+        done, rest = ans[:n0], ans[n0:]
+        actual = sum(a["left"] for a in rest)
+        if actual < MIN_LEFT:
+            continue
+        ds = E._pace_nodes(m, [a["res"] for a in done if a["res"] is not None])
+        s = E.summarize(_rest_cost(m, rest, {a["cid"] for a in done}, ds), factor)
+        if s["mean"] > 0:
+            out.append({"date": cut - 86400, "f": f, "pred": s["mean"], "lo": s["lo"],
+                        "hi": s["hi"], "act": actual, "done": sum(a["t"] for a in done) * factor})
+    return out
 
 
 # ──────────────────────────────────────────────────────────────

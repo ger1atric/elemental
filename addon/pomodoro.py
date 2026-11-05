@@ -12,7 +12,7 @@ The deck list shows a break counting down, and an optional system notification s
 it ends if Anki isn't in front.
 
 Clicking the pill pauses and resumes a block, ends a break early, or takes the early
-break offered when focus drifts. Stop in the pill's hover panel clears the timer when
+break offered when focus drifts. End session in the pill's hover panel clears the timer when
 you're not doing pomodoros (nothing shows in the pill), and Start there brings it back,
 from block 1. A stop lasts until you start again, or the next day.
 With "pause when you leave reviews" a block only counts time on the review screen, so a

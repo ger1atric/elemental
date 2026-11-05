@@ -84,10 +84,13 @@ The only thing that ever leaves your computer is feedback you choose to send fro
 
 Found a bug or have an idea? Send it from **Settings → Feedback**, no account needed. I read every message.
 
-## What's new in 1.9.4
+## What's new in 1.9.5
+
+- Bug fixes and speed improvements.
+
+In 1.9.4:
 
 - A pomodoro timer in the review pill, with breaks in between. Turn it on in **Settings → Review Pill**.
-- Bug fixes and improvements.
 
 In 1.9.3:
 
