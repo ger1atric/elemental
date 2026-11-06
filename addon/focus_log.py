@@ -34,8 +34,7 @@ _dir = os.path.join(os.path.dirname(__file__), "user_files")
 _enabled = lambda: False
 _lookup_key = lambda: ""
 listeners = []          # called when the card on screen is left out of focus or counted again
-_db = None              # sqlite connection for the open profile (main thread only)
-_path = None
+_path = None            # the open profile's log file; None when not recording
 _cur = None             # the card on screen: {"cid", "q0", "a0", "away", "since", "edit"}
                         # edit: 1 = editor or browser opened, 2 = lookup key pressed
 _today = []             # rows answered since the last day cutoff: (cid, t_ms, q, a, away, edit)
@@ -68,46 +67,56 @@ def path() -> str | None:
 # ──────────────────────────────────────────────────────────────
 # Recording
 # ──────────────────────────────────────────────────────────────
+def _connect() -> sqlite3.Connection:
+    """A connection for one write. Nothing stays open between answers: Windows can't move
+    user_files (Anki does that on every update) while a file in it is open."""
+    db = sqlite3.connect(_path, timeout=1.0)
+    no_ckpt = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+    if no_ckpt is not None:
+        try:
+            db.setconfig(no_ckpt, True)     # closing doesn't fold the WAL back (no fsync per answer)
+        except Exception:
+            pass
+    db.execute("PRAGMA synchronous=NORMAL")     # no fsync per answer; safe with WAL
+    # Each commit appends a 4 KB page to the WAL; fold it back often and keep the
+    # file small instead of letting it grow to SQLite's 4 MB default.
+    db.execute("PRAGMA wal_autocheckpoint=64")
+    db.execute("PRAGMA journal_size_limit=262144")
+    return db
+
+
 def _open() -> None:
-    global _db, _path, _today
+    global _path, _today
     _close()
     try:
         name = re.sub(r"[^\w-]", "_", mw.pm.name or "profile")
         os.makedirs(_dir, exist_ok=True)
         _path = os.path.join(_dir, f"focus_log_{name}.sqlite")
-        _db = sqlite3.connect(_path)
-        _db.execute("PRAGMA journal_mode=WAL")
-        _db.execute("PRAGMA synchronous=NORMAL")     # no fsync per answer; safe with WAL
-        # Each commit appends a 4 KB page to the WAL; fold it back often and keep the
-        # file small instead of letting it grow to SQLite's 4 MB default.
-        _db.execute("PRAGMA wal_autocheckpoint=64")
-        _db.execute("PRAGMA journal_size_limit=262144")
-        _db.execute("CREATE TABLE IF NOT EXISTS log (cid INTEGER, t INTEGER, q REAL, a REAL, "
-                    "away REAL, edit INTEGER)")
-        _db.execute("CREATE INDEX IF NOT EXISTS log_t ON log (t)")
-        _db.execute("CREATE INDEX IF NOT EXISTS log_cid ON log (cid, t)")     # the model fit's join
-        _db.execute("DELETE FROM log WHERE t < ?", (int((time.time() - KEEP_DAYS * 86400) * 1000),))
-        _db.commit()
-        since = int((mw.col.sched.day_cutoff - 86400) * 1000)
-        _today = list(_db.execute("SELECT cid, t, q, a, away, edit FROM log WHERE t >= ?", (since,)))
+        db = _connect()
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("CREATE TABLE IF NOT EXISTS log (cid INTEGER, t INTEGER, q REAL, a REAL, "
+                       "away REAL, edit INTEGER)")
+            db.execute("CREATE INDEX IF NOT EXISTS log_t ON log (t)")
+            db.execute("CREATE INDEX IF NOT EXISTS log_cid ON log (cid, t)")     # the model fit's join
+            db.execute("DELETE FROM log WHERE t < ?", (int((time.time() - KEEP_DAYS * 86400) * 1000),))
+            db.commit()
+            since = int((mw.col.sched.day_cutoff - 86400) * 1000)
+            _today = list(db.execute("SELECT cid, t, q, a, away, edit FROM log WHERE t >= ?", (since,)))
+        finally:
+            db.close()
     except Exception:
-        _db = None
+        _path = None
 
 
 def _close() -> None:
-    global _db, _cur, _today
-    _cur, _today = None, []
-    if _db is not None:
-        try:
-            _db.close()
-        except Exception:
-            pass
-        _db = None
+    global _path, _cur, _today
+    _cur, _today, _path = None, [], None
 
 
 def _on_question(card) -> None:
     global _cur
-    if _db is None or not _enabled():
+    if _path is None or not _enabled():
         _cur = None
         return
     now = time.monotonic()
@@ -124,7 +133,7 @@ def _on_answer_shown(card) -> None:
 def _on_answered(reviewer, card, ease) -> None:
     global _cur
     c, _cur = _cur, None
-    if c is None or c["cid"] != card.id or _db is None:
+    if c is None or c["cid"] != card.id or _path is None:
         return
     now = time.monotonic()
     away = c["away"] + (now - c["since"] if c["since"] is not None else 0.0)
@@ -132,8 +141,12 @@ def _on_answered(reviewer, card, ease) -> None:
     row = (card.id, int(time.time() * 1000), round(a0 - c["q0"], 2), round(now - a0, 2),
            round(away, 1), c["edit"])
     try:
-        _db.execute("INSERT INTO log VALUES (?, ?, ?, ?, ?, ?)", row)
-        _db.commit()
+        db = _connect()
+        try:
+            db.execute("INSERT INTO log VALUES (?, ?, ?, ?, ?, ?)", row)
+            db.commit()
+        finally:
+            db.close()
     except Exception:
         return
     _today.append(row)

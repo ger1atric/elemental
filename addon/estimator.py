@@ -500,26 +500,25 @@ def _log_rows_apart(conn: AnkiReader, start_ms: int, today_ms: int):
             "SELECT r.id, r.cid FROM revlog r JOIN cards c ON c.id = r.cid "
             "WHERE r.type < 4 AND r.time > 0 AND r.id >= ? AND r.id < ? ORDER BY r.id",
             (start_ms, today_ms)).fetchall()
-        logs = log.execute("SELECT cid, t, q, away, edit FROM log WHERE t >= ? AND t < ? ORDER BY t",
-                           (start_ms - LOG_MATCH_MS, today_ms + LOG_MATCH_MS))
+        # Read it all now and close: an open file in user_files blocks updates on Windows.
+        logs = iter(log.execute("SELECT cid, t, q, away, edit FROM log WHERE t >= ? AND t < ? ORDER BY t",
+                                (start_ms - LOG_MATCH_MS, today_ms + LOG_MATCH_MS)).fetchall())
     except sqlite3.Error:
-        log.close()
         return None
+    finally:
+        log.close()
 
     def rows():
-        try:
-            near = collections.deque()      # log rows within LOG_MATCH_MS of the answer
-            ahead = next(logs, None)
-            for rid, cid in answers:
-                while ahead is not None and ahead[1] <= rid + LOG_MATCH_MS:
-                    near.append(ahead)
-                    ahead = next(logs, None)
-                while near and near[0][1] < rid - LOG_MATCH_MS:
-                    near.popleft()
-                hit = next((l for l in near if l[0] == cid), None)
-                yield (rid, hit[2], hit[3], hit[4]) if hit else (rid, None, None, None)
-        finally:
-            log.close()
+        near = collections.deque()      # log rows within LOG_MATCH_MS of the answer
+        ahead = next(logs, None)
+        for rid, cid in answers:
+            while ahead is not None and ahead[1] <= rid + LOG_MATCH_MS:
+                near.append(ahead)
+                ahead = next(logs, None)
+            while near and near[0][1] < rid - LOG_MATCH_MS:
+                near.popleft()
+            hit = next((l for l in near if l[0] == cid), None)
+            yield (rid, hit[2], hit[3], hit[4]) if hit else (rid, None, None, None)
     return rows()
 
 
