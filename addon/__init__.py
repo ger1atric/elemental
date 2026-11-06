@@ -10,6 +10,8 @@ import math
 import traceback
 import html as _html
 import re
+import sys
+import types
 import aqt
 from datetime import timedelta, date
 from aqt import mw, gui_hooks
@@ -8545,7 +8547,8 @@ def _row_enter_css(mode):
 
 
 def render(deck_browser, content):
-    global _drawn_key
+    global _drawn_key, _page_key
+    _page_key = None
     cfg = get_config()
     setup_timer()
 
@@ -8630,6 +8633,7 @@ def render(deck_browser, content):
                 if _last_counts and _last_counts != counts and lowpower.motion(cfg) != 'off':
                     moments_css += f"<script>window.hmPrevCounts = {json.dumps(_last_counts)};</script>"
                 _last_counts = counts
+                _page_key = _refresh_key()
 
         exam_html = ""
         notes = (_deck_notices(cfg, today_pill='id="rt-today"' in time_html)
@@ -8836,6 +8840,126 @@ except: pass
 gui_hooks.deck_browser_will_render_content.append(render)
 
 
+# Anki redraws the deck list every 10 minutes (onRefreshTimer) so learning cards that came
+# due show up. That reloads the whole page (photo, glass, heatmap, notices) and shows as a
+# flash. For that redraw only, the numbers are changed in place: the counts, the Time
+# column and the Today pill. The page still reloads when more changed (a new day, an
+# answer or edit, the theme, the decks shown) or when it went from done to not done.
+_page_key = None        # _refresh_key() when the deck list on screen got its final numbers
+
+_QUIET_JS = """(function (d) {
+  window.hmDeckCounts = d.counts;
+  var kinds = [['badge-new', 'new-count'], ['badge-lrn', 'learn-count'], ['badge-due', 'review-count']];
+  Object.keys(d.changed).forEach(function (did) {
+    var row = document.getElementById(did), v = d.changed[did];
+    var cells = row ? row.getElementsByTagName('td') : [];
+    if (cells.length < 5) return;
+    for (var k = 0; k < 3; k++) {
+      var span = cells[k + 1].querySelector('.stat-badge');
+      if (span) { span.innerText = v[k]; span.className = 'stat-badge ' + (v[k] > 0 ? kinds[k][0] : 'badge-dim'); }
+      else cells[k + 1].innerHTML = '<span class="' + (v[k] ? kinds[k][1] : 'zero-count') + '">' + v[k] + '</span>';
+    }
+  });
+  Object.keys(d.cells).forEach(function (did) {
+    var row = document.getElementById(did), old = row && row.querySelector('td.rt-time');
+    if (!old || !d.cells[did]) return;
+    var t = document.createElement('table'); t.innerHTML = '<tbody><tr>' + d.cells[did] + '</tr></tbody>';
+    var td = t.querySelector('td'); if (td) old.replaceWith(td);
+  });
+  // The Today pill may sit in the notices' carousel: change just its text, not the box.
+  var t = document.getElementById('rt-today'), old = t && t.querySelector('.rt-pill:not(.hm-note-pill)');
+  if (old && d.pill) {
+    var w = document.createElement('div'); w.innerHTML = d.pill;
+    var nt = w.querySelector('#rt-today'), np = nt && nt.querySelector('.rt-pill');
+    if (np) {
+      old.className = np.className; old.innerHTML = np.innerHTML;
+      if (t.title && nt.title) t.title = nt.title;
+      var win = t.querySelector('.hm-car-win');
+      if (win) win.style.width = Math.max(parseFloat(win.style.width) || 0, old.offsetWidth + 6) + 'px';
+    }
+  }
+})(%s);"""
+
+
+def _tree_rows(tree):
+    """(deck ids shown, in order; {deck id: [new, learn, due]} for every deck)"""
+    rows, counts = [], {}
+
+    def walk(node, shown):
+        for c in node.children:
+            did = str(c.deck_id)
+            counts[did] = [c.new_count, c.learn_count, c.review_count]
+            if shown:
+                rows.append(did)
+            walk(c, shown and not c.collapsed)
+    walk(tree, True)
+    return rows, counts
+
+
+def _quiet_refresh(full):
+    if QueryOp is None or _page_key is None or "deckBrowser" in _PLACEHOLDER or "deckBrowser" in _WARMING:
+        return full()
+
+    def done(tree):
+        global _last_counts
+        if mw.state != "deckBrowser":
+            return
+        try:
+            rows, counts = _tree_rows(tree)
+            if (_refresh_key() != _page_key or rows != _last_rows or not _last_counts
+                    or not any(sum(v) for v in _last_counts.values())
+                    or not any(sum(counts[r]) for r in rows)):
+                return full()
+            changed = {did: v for did, v in counts.items() if _last_counts.get(did) != v}
+            cells, pill = {}, ""
+            try:
+                fake = types.SimpleNamespace(tree="<th class=optscol></th>" + "".join(
+                    f"<tr class='deck' id='{r}'><td align=center class=opts>" for r in rows))
+                pill = time_left.deck_browser(types.SimpleNamespace(
+                    _render_data=types.SimpleNamespace(tree=tree)), fake, False)
+                time_left.finish_roll()     # what the pill shows now, so the next redraw rolls from it
+                cells = dict(re.findall(r"<tr class='deck' id='(\d+)'>(.*?)<td align=center class=opts>",
+                                        fake.tree, flags=re.S))
+            except Exception:
+                _log_exc()
+            mw.deckBrowser.web.eval(_QUIET_JS % json.dumps(
+                {"counts": counts, "changed": changed, "cells": cells, "pill": pill}))
+            _last_counts = counts
+        except Exception:
+            _log_exc()
+            full()
+
+    QueryOp(parent=mw, op=lambda col: col.sched.deck_due_tree(), success=done) \
+        .failure(lambda _e: full()).run_in_background()
+
+
+def _patch_timer_refresh():
+    """Route Anki's 10-minute redraw of the deck list to _quiet_refresh. Anki set its timer
+    up before add-ons load, so the deck list's refresh is wrapped and only a call from
+    onRefreshTimer goes the quiet way; every other redraw is Anki's own."""
+    db = getattr(mw, "deckBrowser", None)
+    if db is None or getattr(db.refresh, "_hm_quiet", False):
+        return
+    full = db.refresh
+
+    def refresh(*args, **kwargs):
+        try:
+            from_timer = sys._getframe(1).f_code.co_name == "onRefreshTimer"
+        except Exception:
+            from_timer = False
+        if from_timer and mw.state == "deckBrowser" and not args and not kwargs:
+            try:
+                return _quiet_refresh(full)
+            except Exception:
+                _log_exc()
+        return full(*args, **kwargs)
+    refresh._hm_quiet = True
+    db.refresh = refresh
+
+
+_patch_timer_refresh()
+
+
 def _note_return_home(new_state, old_state):
     # before the deck list draws, so that drawing knows it's a return (the graph draws on)
     if new_state == "deckBrowser" and old_state != "deckBrowser":
@@ -8979,6 +9103,8 @@ from aqt import mw, gui_hooks
 from aqt.qt import *
 from anki.cards import Card
 import re
+import sys
+import types
 
 # Count pills off: the counts look like Anki's own (its colors, plain text, faint zeros).
 PLAIN_COUNTS_CSS = """

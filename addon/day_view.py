@@ -560,7 +560,7 @@ def theme(night: bool, accent: str, backdrop: dict | None = None, glass: float =
 
 
 def page(data: dict, night: bool, accent: str, backdrop: dict | None = None, glass: float = 0.45,
-         note: str = "", exam: dict | None = None, scope: str = "", is_today: bool = False) -> str:
+         note: str = "", exam: list | None = None, scope: str = "", is_today: bool = False) -> str:
     from . import review_pill
     ink, panel, photo = theme(night, accent, backdrop, glass)
     ec = _ease_colors(night)
@@ -637,10 +637,10 @@ def page(data: dict, night: bool, accent: str, backdrop: dict | None = None, gla
         sub.append(f"{len(data['sessions'])} session{'s' if len(data['sessions']) != 1 else ''}")
         sub.append(f"{_clock(ans[0]['rid'] / 1000)} – {_clock(ans[-1]['rid'] / 1000)}")
     exam_html = ""
-    if exam:
-        c = exam.get("color", "#e74c3c")
-        exam_html = (f'<span class="chip" style="background:{c}2e;border-color:{c}66">'
-                     f'{html.escape(str(exam.get("label", "Exam")))}</span>')
+    for e in exam or []:        # a day can have more than one exam
+        c = e.get("color", "#e74c3c")
+        exam_html += (f'<span class="chip" style="background:{c}2e;border-color:{c}66">'
+                      f'{html.escape(str(e.get("label", "Exam")))}</span> ')
     head = (f'<div class="head"><button class="nav" onclick="pycmd(\'day:go:-1\')" title="Previous day">{icon("left")}</button>'
             f'<div style="flex:1"><h1>{title} {exam_html}</h1><div class="was">{" · ".join(sub)}</div></div>'
             f'<button class="btn" onclick="pycmd(\'day:note\')">{"Edit note" if note or exam else "Add note"}</button>'
@@ -733,8 +733,11 @@ class DayWindow(QDialog):
         cfg = _get_config()
         ds = d.isoformat()
         exams = cfg.get("exam_days", {})
-        exam = ({"label": "Exam", "color": "#e74c3c"} if ds in exams else None) if isinstance(exams, list) \
+        exam = ([{"label": "Exam", "color": "#e74c3c"}] if ds in exams else None) if isinstance(exams, list) \
             else exams.get(ds)
+        if isinstance(exam, dict):      # one exam saved as a dict, several as a list
+            exam = [exam]
+        exam = [e for e in exam or [] if isinstance(e, dict)] or None
         try:
             html_ = page(collect(d, deck_ids), time_left._is_night(), time_left._new_color(),
                          time_left._backdrop(), time_left._glass_opacity(),
