@@ -5327,6 +5327,16 @@ def get_deck_and_children_ids(deck_id):
         pass
     return deck_ids
 
+def _cards_due(col, deck_ids, today_int, now_int):
+    """The heatmap's DUE number: reviews due today and learning cards due now."""
+    deck_filter = f"AND did IN ({','.join(map(str, deck_ids))})" if deck_ids else ""
+    rev = col.db.scalar(f"SELECT count() FROM cards WHERE queue = 2 AND due <= {today_int} {deck_filter}")
+    # queue 1's due is a time, queue 3's (steps of a day or more) a day number
+    lrn = col.db.scalar(f"SELECT count() FROM cards WHERE ((queue = 1 AND due <= {now_int}) "
+                        f"OR (queue = 3 AND due <= {today_int})) {deck_filter}")
+    return rev + lrn
+
+
 class FastEngine:
     def __init__(self, cache_only=False):
         self.col = mw.col
@@ -5713,7 +5723,8 @@ class FastEngine:
 
         rows = self.col.db.all("SELECT did, count() FROM cards WHERE queue=0 GROUP BY did")
         for did, cnt in rows: add_stat(did, 'n', cnt)
-        rows = self.col.db.all(f"SELECT did, count() FROM cards WHERE queue IN (1,3) AND due <= {now_int} GROUP BY did")
+        rows = self.col.db.all(f"SELECT did, count() FROM cards WHERE (queue = 1 AND due <= {now_int}) "
+                               f"OR (queue = 3 AND due <= {today_int}) GROUP BY did")
         for did, cnt in rows: add_stat(did, 'l', cnt)
         rows = self.col.db.all(f"SELECT did, count() FROM cards WHERE queue=2 AND due <= {today_int} GROUP BY did")
         for did, cnt in rows: add_stat(did, 'd', cnt)
@@ -5822,14 +5833,7 @@ class FastEngine:
         
         cards_due = 0
         try:
-            if deck_ids:
-                deck_filter = f"AND did IN ({','.join(map(str, deck_ids))})"
-                rev = self.col.db.scalar(f"SELECT count() FROM cards WHERE queue = 2 AND due <= {today_int} {deck_filter}")
-                lrn = self.col.db.scalar(f"SELECT count() FROM cards WHERE queue IN (1, 3) AND due <= {now_int} {deck_filter}")
-            else:
-                rev = self.col.db.scalar(f"SELECT count() FROM cards WHERE queue = 2 AND due <= {today_int}")
-                lrn = self.col.db.scalar(f"SELECT count() FROM cards WHERE queue IN (1, 3) AND due <= {now_int}")
-            cards_due = rev + lrn
+            cards_due = _cards_due(self.col, deck_ids, today_int, now_int)
         except: pass
 
         streak = 0
@@ -8849,6 +8853,10 @@ _page_key = None        # _refresh_key() when the deck list on screen got its fi
 
 _QUIET_JS = """(function (d) {
   window.hmDeckCounts = d.counts;
+  if (typeof d.due === 'number') [].forEach.call(document.querySelectorAll('.stat-group'), function (g) {
+    var l = g.querySelector('.stat-lbl'), v = g.querySelector('.stat-val');
+    if (l && v && l.textContent.trim() === 'DUE') v.textContent = d.due;
+  });
   var kinds = [['badge-new', 'new-count'], ['badge-lrn', 'learn-count'], ['badge-due', 'review-count']];
   Object.keys(d.changed).forEach(function (did) {
     var row = document.getElementById(did), v = d.changed[did];
@@ -8900,10 +8908,20 @@ def _quiet_refresh(full):
     if QueryOp is None or _page_key is None or "deckBrowser" in _PLACEHOLDER or "deckBrowser" in _WARMING:
         return full()
 
-    def done(tree):
+    deck_ids = _main_heatmap_args(get_config())["deck_ids"]
+
+    def op(col):
+        try:
+            due = _cards_due(col, deck_ids, col.sched.today, int(time.time()))
+        except Exception:
+            due = None
+        return col.sched.deck_due_tree(), due
+
+    def done(result):
         global _last_counts
         if mw.state != "deckBrowser":
             return
+        tree, due = result
         try:
             rows, counts = _tree_rows(tree)
             if (_refresh_key() != _page_key or rows != _last_rows or not _last_counts
@@ -8923,13 +8941,13 @@ def _quiet_refresh(full):
             except Exception:
                 _log_exc()
             mw.deckBrowser.web.eval(_QUIET_JS % json.dumps(
-                {"counts": counts, "changed": changed, "cells": cells, "pill": pill}))
+                {"counts": counts, "changed": changed, "cells": cells, "pill": pill, "due": due}))
             _last_counts = counts
         except Exception:
             _log_exc()
             full()
 
-    QueryOp(parent=mw, op=lambda col: col.sched.deck_due_tree(), success=done) \
+    QueryOp(parent=mw, op=op, success=done) \
         .failure(lambda _e: full()).run_in_background()
 
 
