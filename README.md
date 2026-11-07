@@ -86,6 +86,7 @@ Found a bug or have an idea? Send it from **Settings → Feedback**, no account 
 
 ## What's new in 1.9.5
 
+- Always dark home page: keeps the deck list dark when Anki is light (Settings → Deck Browser).
 - Bug fixes and speed improvements.
 
 In 1.9.4:

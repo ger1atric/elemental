@@ -37,12 +37,38 @@ except ImportError:
 ADDON_NAME = "Elemental"
 VERSION = "1.9.5"
 
+_home_dark_now = False      # while the home page draws with "Always dark" on (_HomeDark)
+
+
 def _is_dark_mode():
-    """Check if Anki is in dark mode."""
+    """Check if Anki is in dark mode (or the home page is drawing with "Always dark" on)."""
+    if _home_dark_now:
+        return True
     try:
         from aqt.theme import theme_manager
         return theme_manager.night_mode
     except:
+        return False
+
+
+def _home_always_dark() -> bool:
+    """The "Always dark" setting (read raw: get_config itself asks _is_dark_mode)."""
+    try:
+        return bool((mw.addonManager.getConfig(__name__) or {}).get("home_always_dark", False))
+    except Exception:
+        return False
+
+
+class _HomeDark:
+    """While the home page draws: dark if Anki is, or if "Always dark" is on."""
+    def __enter__(self):
+        global _home_dark_now
+        self.prev = _home_dark_now
+        _home_dark_now = _home_always_dark()
+
+    def __exit__(self, *_exc):
+        global _home_dark_now
+        _home_dark_now = self.prev
         return False
 
 def _release_notes_html(releases, text, subtext, accent, headings=True):
@@ -219,6 +245,7 @@ DEFAULT_CONFIG = {
     "enable_deck_glass": True,
     "show_deck_ratio": True,
     "deck_count_pills": True,              # New / Learning / Due as pills (off: Anki's plain numbers)
+    "home_always_dark": False,             # the home page stays dark when Anki is light
     "deck_list_width": 540,
     "replace_stats": True,
     "glass_opacity": 0.4,
@@ -2925,6 +2952,10 @@ class HeatmapSettingsDialog(QDialog):
 
         deck_layout.addLayout(sub_layout)
 
+        self.chk_home_dark = QCheckBox("Always dark")
+        self.chk_home_dark.setChecked(self.cfg.get("home_always_dark", False))
+        deck_layout.addWidget(self.chk_home_dark)
+
         self.chk_modern.toggled.connect(self.chk_deck_glass.setEnabled)
         self.chk_modern.toggled.connect(self.chk_ratio.setEnabled)
         self.chk_modern.toggled.connect(self.chk_count_pills.setEnabled)
@@ -4660,6 +4691,7 @@ class HeatmapSettingsDialog(QDialog):
         self.cfg['enable_deck_glass'] = self.chk_deck_glass.isChecked()
         self.cfg['show_deck_ratio'] = self.chk_ratio.isChecked()
         self.cfg['deck_count_pills'] = self.chk_count_pills.isChecked()
+        self.cfg['home_always_dark'] = self.chk_home_dark.isChecked()
         self.cfg['deck_list_width'] = self.deck_width_slider.value()
         self.cfg['replace_stats'] = self.chk_replace.isChecked()
 
@@ -6722,12 +6754,17 @@ def _refresh_key():
     has nothing new to show."""
     try:
         mod_, last = mw.col.db.first("SELECT (SELECT mod FROM col), (SELECT MAX(id) FROM revlog)")
-        return (mod_, last, mw.col.sched.today, _is_dark_mode())
+        return (mod_, last, mw.col.sched.today, _is_dark_mode() or _home_always_dark())
     except Exception:
         return None
 
 
 def on_refresh_timer():
+    with _HomeDark():
+        _on_refresh_timer()
+
+
+def _on_refresh_timer():
     global _drawn_key
     if mw.state == "deckBrowser":
         key = _refresh_key()
@@ -8551,6 +8588,11 @@ def _row_enter_css(mode):
 
 
 def render(deck_browser, content):
+    with _HomeDark():
+        _render(deck_browser, content)
+
+
+def _render(deck_browser, content):
     global _drawn_key, _page_key
     _page_key = None
     cfg = get_config()
@@ -8947,7 +8989,11 @@ def _quiet_refresh(full):
             _log_exc()
             full()
 
-    QueryOp(parent=mw, op=op, success=done) \
+    def drawn(result):
+        with _HomeDark():
+            done(result)
+
+    QueryOp(parent=mw, op=op, success=drawn) \
         .failure(lambda _e: full()).run_in_background()
 
 
@@ -8976,6 +9022,32 @@ def _patch_timer_refresh():
 
 
 _patch_timer_refresh()
+
+
+def _home_dark_page(web_content, context):
+    """With "Always dark" on and Anki light: the deck list page gets Anki's own dark-mode
+    marks (so its CSS and ours turn dark) before anything paints, and a dark backdrop."""
+    try:
+        from aqt.deckbrowser import DeckBrowser
+        from aqt.theme import theme_manager
+        from aqt import colors
+        if not isinstance(context, DeckBrowser):
+            return
+        forced = _home_always_dark() and not theme_manager.night_mode
+        mw.deckBrowser.web.page().setBackgroundColor(
+            QColor(colors.CANVAS["dark"]) if forced else theme_manager.qcolor(colors.CANVAS))
+        if forced:
+            web_content.head += ("<script>document.documentElement.classList.add('night-mode');"
+                                 "document.documentElement.dataset.bsTheme = 'dark';</script>")
+            web_content.body = ("<script>document.body.classList.add('nightMode', 'night_mode');</script>"
+                                + web_content.body)
+    except Exception:
+        _log_exc()
+
+
+try: gui_hooks.webview_will_set_content.remove(_home_dark_page)
+except Exception: pass
+gui_hooks.webview_will_set_content.append(_home_dark_page)
 
 
 def _note_return_home(new_state, old_state):

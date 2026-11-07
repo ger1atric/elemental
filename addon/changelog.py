@@ -8,6 +8,7 @@ from __future__ import annotations
 
 RELEASES = [
     {"version": '1.9.5', "date": 'November 5, 2026', "notes": [
+        ('Always dark home page', "Keeps the deck list dark when Anki is light. Turn it on in Settings → Deck Browser."),
         ('Bug fixes and speed improvements', ""),
     ]},
     {"version": '1.9.4', "date": 'November 4, 2026', "notes": [

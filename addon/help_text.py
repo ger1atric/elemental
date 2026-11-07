@@ -49,6 +49,7 @@ HELP = {
     "chk_deck_glass": "Puts your deck list in the same frosted-glass box as the heatmap.",
     "chk_ratio": "Adds a little ring next to each deck that fills in as you get through today's cards.",
     "chk_count_pills": "Shows New, Learning and Due as colored pills. Turn it off for Anki's plain numbers.",
+    "chk_home_dark": "Keeps the deck list dark when Anki is in light mode.",
     "chk_replace": ("Hides Anki's own \"Studied 120 cards in 25 minutes today\" line, since the heatmap "
                     "already tells you that."),
 
