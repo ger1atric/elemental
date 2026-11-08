@@ -41,11 +41,11 @@ It works in light and dark mode, and everything is optional. Turn on what you li
 - Learns from your own review history and gets better every day.
 - **Tools → Time Estimate Accuracy** shows how close it has been.
 
-## Review pill (optional)
+## Live Stats (optional)
 
-- A small pill in a corner of the review screen showing your retention and when you'll finish.
+- A small box in a corner of the review screen showing your retention and when you'll finish.
 - Hover it for the details, including today's **focus score**: how many cards you answered in about your usual time for that card. Cards where you stopped to look something up are left out.
-- A soft ring around the pill after each answer shows whether it was a focused one.
+- A soft ring around it after each answer shows whether it was a focused one.
 
 ## Make it yours
 
@@ -86,12 +86,12 @@ Found a bug or have an idea? Send it from **Settings → Feedback**, no account 
 
 ## What's new in 1.9.5
 
-- Always dark home page: keeps the deck list dark when Anki is light (Settings → Deck Browser).
-- Bug fixes and speed improvements.
+- Heatmap improvements: more heatmap display settings, like separating months, and you can scroll back through more of your history.
+- Bug fixes and improvements.
 
 In 1.9.4:
 
-- A pomodoro timer in the review pill, with breaks in between. Turn it on in **Settings → Review Pill**.
+- Adds a pomodoro timer to your daily reviews, in Live Stats. Turn it on in **Settings → Live Stats**.
 
 In 1.9.3:
 
@@ -102,7 +102,6 @@ In 1.9.3:
 In 1.9.2:
 
 - Click any day on the heatmap to see it up close: your focus, when you studied, your weakest topics and every card you answered.
-- Press X during review to leave a card out of your focus score.
 - The forecast now lines up with your actual reviews, and today shows what you have left.
 - You can tell the forecast which days you add new cards, or match your last 4 weeks.
 - You can turn on a confidence band around the forecast.
@@ -112,7 +111,7 @@ In 1.9.2:
 In 1.9.1:
 
 - 19 themes, six of them with a matching background photo
-- A focus score in the review pill, and a FOCUS view on the heatmap
+- A focus score in Live Stats, and a FOCUS view on the heatmap
 - A new settings window with search and live previews
 - AnKing card styling, with a preview and one-click removal
 - Background photos: a built-in one, or your own with a new one each day
