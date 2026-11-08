@@ -87,7 +87,8 @@ Found a bug or have an idea? Send it from **Settings → Feedback**, no account 
 ## What's new in 1.9.5
 
 - Heatmap improvements: more heatmap display settings, like separating months, and you can scroll back through more of your history.
-- Bug fixes and improvements.
+- Performance improvements.
+- Bug fixes.
 
 In 1.9.4:
 
