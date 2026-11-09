@@ -8,9 +8,9 @@ from __future__ import annotations
 
 RELEASES = [
     {"version": '1.9.6', "date": 'November 9, 2026', "notes": [
-        ('Forecast shading', "In Volume view, future days get darker the more cards are due. Turn it off in Settings → General."),
-        ('Smoother reviews', "Cards show up right away, before Live Stats updates."),
-        ('Bug fixes', "Fixes Anki's memory use growing on the deck screen."),
+        ('Heatmap improvements', "In Volume view, future days get darker the more cards are due. Turn it off in Settings → General."),
+        ('Performance improvements', ""),
+        ('Bug fixes', ""),
     ]},
     {"version": '1.9.5', "date": 'November 8, 2026', "notes": [
         ('Heatmap improvements', "Adds more heatmap display settings, like separating months, and lets you scroll back through more of your history."),
