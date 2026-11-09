@@ -217,7 +217,7 @@ DEFAULT_CONFIG = {
     "base_color": "#8e44ad",
     "forecast_color": "#bdc3c7",
     "forecast_shade_color": "#20b2aa",     # future days, shaded by predicted cards
-    "forecast_shading": True,              # off: every forecast day in forecast_color, flat
+    "forecast_shading": False,             # off: every forecast day in forecast_color, flat
     "today_color": "#2ecc71",
     "empty_color": "#ebedf0",
     "empty_color_night": "#282c34",
@@ -1560,7 +1560,7 @@ class _ThemeCard(QWidget):
     # cell levels (0 = no reviews … 4 = busiest); the last columns are the forecast
     _LEVELS = ["0123432101", "1234321012", "2343210123", "1232101234", "0121012343"]
     _AHEAD = (0.9, 0.7, 0.8, 0.6, 0.75)    # forecast shading, first forecast column
-    shade = True                          # Shade forecast by cards due (set by Settings)
+    shade = False                         # Shade forecast by cards due (set by Settings)
 
     def __init__(self, key, name, colors, night, on_pick, photo_path=None, parent=None):
         super().__init__(parent)
@@ -2535,7 +2535,7 @@ class HeatmapSettingsDialog(QDialog):
         self.chk_sep_months.setChecked(bool(self.cfg.get("separate_months", False)))
         hm_layout.addWidget(self.chk_sep_months)
         self.chk_forecast_shading = QCheckBox("Shade forecast by cards due")
-        self.chk_forecast_shading.setChecked(bool(self.cfg.get("forecast_shading", True)))
+        self.chk_forecast_shading.setChecked(bool(self.cfg.get("forecast_shading", False)))
         _ThemeCard.shade = self.chk_forecast_shading.isChecked()
 
         def shading(on):
@@ -7570,7 +7570,7 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
 
     # Forecast days: shaded by predicted cards in their own color, on the same scale as
     # past days (glow: placed among the days shown). Off: one flat forecast color.
-    shade_fc = bool(cfg.get('forecast_shading', True))
+    shade_fc = bool(cfg.get('forecast_shading', False))
     shade_c = cfg.get('forecast_shade_color') or DEFAULT_CONFIG['forecast_shade_color']
 
     # Before the history has loaded (the first draw), scale against the forecast itself.

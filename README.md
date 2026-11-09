@@ -86,7 +86,7 @@ Found a bug or have an idea? Send it from **Settings → Feedback**, no account 
 
 ## What's new in 1.9.6
 
-- Heatmap improvements: in Volume view, future days get darker the more cards are due. Turn it off in **Settings → General**.
+- Heatmap improvements: visualize your future review load directly on the heatmap. In Volume view, upcoming days get darker the more cards are due. Turn it on in **Settings → General**.
 - Performance improvements.
 - Bug fixes.
 

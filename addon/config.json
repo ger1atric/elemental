@@ -2,7 +2,7 @@
     "base_color": "#8e44ad",
     "forecast_color": "#bdc3c7",
     "forecast_shade_color": "#20b2aa",
-    "forecast_shading": true,
+    "forecast_shading": false,
     "today_color": "#2ecc71",
     "empty_color": "#ebedf0",
     "empty_color_night": "#282c34",

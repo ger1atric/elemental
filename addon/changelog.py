@@ -8,7 +8,7 @@ from __future__ import annotations
 
 RELEASES = [
     {"version": '1.9.6', "date": 'November 9, 2026', "notes": [
-        ('Heatmap improvements', "In Volume view, future days get darker the more cards are due. Turn it off in Settings → General."),
+        ('Heatmap improvements', "Visualize your future review load directly on the heatmap: in Volume view, upcoming days get darker the more cards are due. Turn it on in Settings → General."),
         ('Performance improvements', ""),
         ('Bug fixes', ""),
     ]},
