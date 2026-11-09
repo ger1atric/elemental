@@ -1048,7 +1048,13 @@ class StatsWindow(QDialog):
                          f"<pre style='font-size:11px'>{html.escape(traceback.format_exc())}</pre></body>")
             self.web.setHtml(lowpower.into(html_))
 
-        mw.taskman.run_in_background(lambda: collect(rng, deck_ids, cfg, m, path, ro), done)
+        # Its own read-only connection (Anki's on Windows, a statement at a time): it doesn't
+        # need Anki's collection queue, and holding it made opening a deck wait while it loaded
+        task = lambda: collect(rng, deck_ids, cfg, m, path, ro)
+        try:
+            mw.taskman.run_in_background(task, done, uses_collection=False)
+        except TypeError:       # Anki before 2.1.45
+            mw.taskman.run_in_background(task, done)
 
     def _on_cmd(self, cmd: str):
         if cmd.startswith("stats:range:"):

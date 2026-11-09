@@ -26,6 +26,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 
 from urllib.parse import quote
@@ -41,7 +42,7 @@ except ImportError:     # very old Anki
     AnkiWebView = None
     from aqt.qt import QWebEngineView
 
-from . import accuracy, estimator, focus_log
+from . import accuracy, estimator, focus_log, startup_cache
 
 TIME_LEFT_API = 1
 
@@ -180,7 +181,7 @@ def _background(task, done) -> None:
 def _get_model():
     """The current day's model; kicks off a background fit when it's missing or stale
     (returns the stale one meanwhile, or None before the first fit lands)."""
-    global _fitting
+    global _fitting, _model
     if mw.col is None or not enabled():
         return None
     try:
@@ -188,8 +189,15 @@ def _get_model():
     except Exception:
         return _model
     if (_model is None or _model.cutoff != cutoff) and not _fitting:
-        _fitting = True
         path = mw.col.path
+        log_path, away, reading = focus_log.path(), _away_is_lookup(), _reading_counts()
+        # Fitted earlier today (Anki was restarted): the saved model, not ~2 s of fitting
+        key = (path, cutoff, log_path, bool(away), bool(reading))
+        saved = startup_cache.model_get(key)
+        if saved is not None and getattr(saved, "cutoff", None) == cutoff:
+            _model = saved
+            return _model
+        _fitting = True
 
         def done(fut) -> None:
             global _model, _fitting, _after_fit
@@ -204,11 +212,11 @@ def _get_model():
             if mw.col is None or mw.col.path != path:
                 return
             _model = m
+            _background(lambda: startup_cache.model_put(key, m), None)    # for a restart later today
             _refresh_views()
             # A new Anki day: redo the accuracy check once things have settled.
             QTimer.singleShot(90_000, _run_accuracy)
 
-        log_path, away, reading = focus_log.path(), _away_is_lookup(), _reading_counts()
         _background(lambda: estimator.fit(path, cutoff, log_path, away, reading), done)
     return _model
 
@@ -281,10 +289,15 @@ def _tree_totals(m, tree, costs, ds, visit=None) -> tuple:
 _left = None    # (cutoff, when, predicted seconds left in the whole collection)
 
 
-def _progress(m, conn, cutoff: int, today: int, ds, factor: float, totals=None) -> tuple:
+def _left_stale(cutoff: int, margin: float = 0.0) -> bool:
+    return _left is None or _left[0] != cutoff or time.time() - _left[1] > 60 - margin
+
+
+def _progress(m, conn, cutoff: int, today: int, ds, factor: float, totals=None, tree=None) -> tuple:
     """(share of today's time already done, predicted seconds left in every deck) —
     what the accuracy correction is keyed on. The collection-wide time left is
-    refreshed at most once a minute."""
+    refreshed at most once a minute. tree: the deck tree, when it was read ahead (off
+    the main thread there's no asking Anki for it; a refresh without it waits)."""
     global _left
     if totals is not None:
         _left = (cutoff, time.time(), (totals[0].total() + totals[1].total()) * factor)
@@ -292,9 +305,10 @@ def _progress(m, conn, cutoff: int, today: int, ds, factor: float, totals=None) 
     if own:
         conn = estimator.connect(mw.col.path)
     try:
-        if _left is None or _left[0] != cutoff or time.time() - _left[1] > 60:
+        if _left_stale(cutoff) and (tree is not None or threading.current_thread() is threading.main_thread()
+                                    or _left is None):
             costs = estimator.card_costs(m, conn, today, cutoff, time.time(), ds)
-            w, n = _tree_totals(m, mw.col.sched.deck_due_tree(), costs, ds)
+            w, n = _tree_totals(m, tree if tree is not None else mw.col.sched.deck_due_tree(), costs, ds)
             _left = (cutoff, time.time(), (w.total() + n.total()) * factor)
         done = estimator.done_today(conn, cutoff) * factor
     finally:
@@ -332,33 +346,56 @@ def estimate(did: int, counts, with_recent: bool = False) -> dict | None:
     range), plus "counts", "reviews_first", "done" (seconds already spent in these
     decks today, counted like the estimate), and with_recent "recent" — the time
     left at your last ~50 cards' pace. None when switched off or not ready yet."""
+    return estimate_run(estimate_prep(did, counts), with_recent)
+
+
+def estimate_prep(did: int, counts):
+    """What estimate() needs from Anki, read on the main thread; None when switched off
+    or not ready. estimate_run() does the rest, on any thread."""
     m = _get_model()
     if m is None or not m.table1:
         return None
     try:
         dids = [did] + [child_id for _, child_id in mw.col.decks.children(did)]
         cutoff, today = int(mw.col.sched.day_cutoff), int(mw.col.sched.today)
-        factor = m.wall if _desk() else 1.0
-        conn = estimator.connect(mw.col.path)
+        table = _calibration()
+        # the collection-wide time left behind the correction is refreshed once a
+        # minute, and needs the deck tree: read it here when it's (nearly) due
+        tree = mw.col.sched.deck_due_tree() if table and _left_stale(cutoff, margin=5) else None
+        return {"m": m, "path": mw.col.path, "dids": dids, "cutoff": cutoff, "today": today,
+                "factor": m.wall if _desk() else 1.0, "counts": tuple(counts), "top": _top_name(did),
+                "table": table, "tree": tree, "reviews_first": _reviews_first(did)}
+    except Exception:
+        return None
+
+
+def estimate_run(prep, with_recent: bool = False) -> dict | None:
+    """estimate() from estimate_prep()'s inputs: only the add-on's own read-only
+    connection and the model, so it can run off the main thread."""
+    if prep is None:
+        return None
+    try:
+        m, cutoff, today, factor, dids = prep["m"], prep["cutoff"], prep["today"], prep["factor"], prep["dids"]
+        conn = estimator.connect(prep["path"])
         try:
             ds, recent = estimator.paces(m, conn, cutoff)
-            args = (m, conn, today, cutoff, time.time(), dids, tuple(counts), _top_name(did))
+            args = (m, conn, today, cutoff, time.time(), dids, prep["counts"], prep["top"])
             est = estimator.deck_estimate(*args, ds, factor)
             est["recent"] = None
             if with_recent and recent is not None:
                 r = estimator.deck_estimate(*args, [recent] * estimator.DAY_NODES, factor)
                 est["recent"] = {"reviews": r["reviews"]["mean"], "all": r["all"]["mean"]}
-            table = _calibration()
+            table = prep["table"]
             if table:
-                p, left = _progress(m, conn, cutoff, today, ds, factor)
+                p, left = _progress(m, conn, cutoff, today, ds, factor, tree=prep["tree"])
                 c = estimator.correction_at(table, p, left)[0]
                 for k in ("reviews", "new", "all"):
                     est[k] = estimator.corrected(est[k], p, left, table)
                 if est["recent"]:
                     est["recent"] = {k: v * c for k, v in est["recent"].items()}
             est["done"] = estimator.done_today(conn, cutoff, dids) * factor
-            est["reviews_first"] = _reviews_first(did)
-            est["counts"] = tuple(counts)
+            est["reviews_first"] = prep["reviews_first"]
+            est["counts"] = prep["counts"]
             return est
         finally:
             conn.close()

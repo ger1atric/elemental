@@ -31,6 +31,7 @@ import math
 import os
 import random
 import sqlite3
+import sys
 from array import array
 from statistics import NormalDist
 from pathlib import Path
@@ -69,7 +70,10 @@ def connect(path: str, fallback: bool = True):
     fallback=False, sqlite3.OperationalError)."""
     if path not in _refused:
         # A proper file URI (file:///C:/… on Windows).
-        conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0)
+        # On Windows Anki's lock always refuses it: find out at once rather than after
+        # SQLite's 1-second wait for the lock (that froze the window at startup)
+        conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True,
+                               timeout=0.0 if sys.platform.startswith("win") else 1.0)
         try:
             conn.execute("PRAGMA query_only=1;")
             conn.execute("SELECT 1 FROM col")       # opening is lazy: a lock shows up here
@@ -793,9 +797,20 @@ class Cost:
 def card_costs(m: Model, conn, today: int, cutoff: int, now: float, ds: list, dids=None) -> dict:
     """{did: (reviews Cost, learning Cost)} for due reviews and cards in learning."""
     where = f" AND c.did IN ({','.join(str(int(d)) for d in dids)})" if dids else ""
-    reviews = conn.execute(
-        "SELECT c.id, c.did, c.data, (SELECT MAX(id) FROM revlog WHERE cid = c.id) / 1000 "
-        "FROM cards c WHERE c.queue = 2 AND c.due <= ?" + where, (today,)).fetchall()
+    # A card's last review time is in its FSRS data (lrt) on current Anki; look it up in
+    # the revlog only for the cards whose data doesn't have it.
+    rows = conn.execute("SELECT c.id, c.did, c.data FROM cards c WHERE c.queue = 2 AND c.due <= ?" + where,
+                        (today,)).fetchall()
+    need = [cid for cid, _did, data in rows if (mem := _memory(cid, data)) is not None and not mem[2]]
+    if len(need) > 200:
+        reviews = conn.execute(
+            "SELECT c.id, c.did, c.data, (SELECT MAX(id) FROM revlog WHERE cid = c.id) / 1000 "
+            "FROM cards c WHERE c.queue = 2 AND c.due <= ?" + where, (today,)).fetchall()
+    else:
+        last = dict(conn.execute(
+            "SELECT c.id, (SELECT MAX(id) FROM revlog WHERE cid = c.id) / 1000 FROM cards c "
+            f"WHERE c.id IN ({','.join(str(int(c)) for c in need)})").fetchall()) if need else {}
+        reviews = [(cid, did, data, last.get(cid)) for cid, did, data in rows]
     learning = conn.execute(
         "SELECT c.id, c.did FROM cards c WHERE ((c.queue = 1 AND c.due < ?) "
         "OR (c.queue = 3 AND c.due <= ?))" + where, (cutoff, today)).fetchall()
@@ -804,19 +819,26 @@ def card_costs(m: Model, conn, today: int, cutoff: int, now: float, ds: list, di
     m0, m1 = m.mu.get(("review", 0), 1.9), m.mu.get(("review", 1), 2.3)
     L1, L2 = m.lapse
     t1, t2, top = m.table1, m.table2, GRID_N - 1
-    nodes = list(zip(range(len(ds)), ds, scale))
+    # Per pace node, what doesn't depend on the card: its offset on the cost table's grid
+    # and the lapse terms. This runs for every due card at every node, on each card you
+    # answer (off the main thread in review) and on each deck list.
+    nodes = [(k, d / GRID_STEP, s * L1, s * s * L2) for k, (d, s) in enumerate(zip(ds, scale))]
+    g0, g1 = (m0 - GRID_LO) / GRID_STEP, (m1 - GRID_LO) / GRID_STEP
     out = {}
     for cid, did, data, last in reviews:
         p = 1 - _retrievability(data, last, now, 1 - m.fail_rate, cid)
         q = 1 - p
-        b = m.card_eff.get(cid, 0.0)
-        c = out.setdefault(did, (Cost(), Cost()))[0]
+        b = m.card_eff.get(cid, 0.0) / GRID_STEP
+        c = out.get(did)
+        if c is None:
+            c = out[did] = (Cost(), Cost())
+        c = c[0]
         c.n += 1
         cm, cv = c.mean, c.var
-        for k, d, s in nodes:
-            # _table(m, x) for the pass and the fail time, inlined: this runs for every
-            # due card at every pace node, on each card you answer.
-            f = (m0 + b + d - GRID_LO) / GRID_STEP
+        p0, p1 = g0 + b, g1 + b
+        for k, off, sl, s2l2 in nodes:
+            # _table(m, x) for the pass and the fail time, inlined
+            f = p0 + off
             if f <= 0:
                 e1p, e2p = t1[0], t2[0]
             elif f >= top:
@@ -824,7 +846,7 @@ def card_costs(m: Model, conn, today: int, cutoff: int, now: float, ds: list, di
             else:
                 i = int(f); w = f - i
                 e1p, e2p = t1[i] + (t1[i + 1] - t1[i]) * w, t2[i] + (t2[i + 1] - t2[i]) * w
-            f = (m1 + b + d - GRID_LO) / GRID_STEP
+            f = p1 + off
             if f <= 0:
                 e1f, e2f = t1[0], t2[0]
             elif f >= top:
@@ -832,11 +854,12 @@ def card_costs(m: Model, conn, today: int, cutoff: int, now: float, ds: list, di
             else:
                 i = int(f); w = f - i
                 e1f, e2f = t1[i] + (t1[i + 1] - t1[i]) * w, t2[i] + (t2[i + 1] - t2[i]) * w
-            sl = s * L1
             mean = q * e1p + p * (e1f + sl)
-            m2 = q * e2p + p * (e2f + 2 * e1f * sl + s * s * L2)
+            m2 = q * e2p + p * (e2f + 2 * e1f * sl + s2l2)
             cm[k] += mean
-            cv[k] += max(m2 - mean * mean, 0.0)
+            v = m2 - mean * mean
+            if v > 0.0:
+                cv[k] += v
     X1, X2 = m.learn
     for cid, did in learning:
         f = math.exp(m.card_eff.get(cid, 0.0))

@@ -279,7 +279,17 @@ _STREAK_JS = """<script>(function(){
     var big2 = S.tier === '500', b = hudBox();
     var cells = [].slice.call(document.querySelectorAll('#heatmap-root .cell')), ti = cells.indexOf(document.getElementById('hm-today'));
     if (!b || ti < 0) { if (b) b.done(); return 0; }
-    var W = Math.ceil(cells.length / 7), MC = (W - 1) / 2, MR = 3, K = 1.15, GOLD = [244, 200, 90], WHITE = [255, 248, 226], DARK = [16, 19, 14];
+    // Where each square is, in squares from the left of the visible heatmap (not its place in
+    // the list: with separate months, weeks split and gaps open between months; older weeks
+    // scrolled off to the left sit at negative columns). Centered on what's on screen.
+    var sb = document.getElementById('heatmap-scroll'), grid = sb && sb.querySelector('.grid');
+    var view = sb.getBoundingClientRect(), gtop = grid.getBoundingClientRect().top;
+    var pitch = cells[0].offsetHeight + (parseFloat(getComputedStyle(grid).rowGap) || 0);
+    var pos = cells.map(function (c) {
+      var r = c.getBoundingClientRect();
+      return [(r.left - view.left) / pitch, Math.round((r.top - gtop) / pitch)];
+    });
+    var W = Math.max(1, view.width / pitch), MC = (W - 1) / 2, MR = 3, K = 1.15, GOLD = [244, 200, 90], WHITE = [255, 248, 226], DARK = [16, 19, 14];
     var base = cells.map(function (c) { var bg = getComputedStyle(c).backgroundColor; return { css: c.style.background, rgb: rgbOf(bg), a: alphaOf(bg) }; });
     // dim: how far the squares are dimmed; v: gold; fl: white on top (crossings, burst centres)
     function paint(c, k, v, fl, dim) {
@@ -316,7 +326,7 @@ _STREAK_JS = """<script>(function(){
       seg.setAttribute('stroke-dashoffset', (-per * q * 2.6).toFixed(1));
       seg.setAttribute('opacity', (q < 0.1 ? q / 0.1 : q > 0.9 ? (1 - q) / 0.1 : 1).toFixed(2));
       cells.forEach(function (c, k) {
-        var col = Math.floor(k / 7), row = k % 7, v = 0, fl = 0, arm = Math.abs(row - MR) * K, j, p, age;
+        var col = pos[k][0], row = pos[k][1], v = 0, fl = 0, arm = Math.abs(row - MR) * K, j, p, age;
         for (j = 0; j < PAIRS; j++) {
           age = t - j * EVERY;
           if (age < 0 || age > TRAVEL) continue;

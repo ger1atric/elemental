@@ -4,7 +4,11 @@ on the ring. Always in the brand teal, so it looks the same whatever the heatmap
 
   svg(...)          the logo as inline SVG, for the web pages (heatmap, stats window)
   SCRIPT            window.hmLogo(svg, loop): the dots spread out from one point (once),
-                    or spread and gather again for as long as something is loading
+                    or spread and gather again a few times while something loads, then rest
+
+Nothing on Elemental's pages may animate without end: Anki's web view keeps memory for
+every frame drawn, so an animation left running grows Anki by megabytes a second (and
+far more on some Windows computers). Every animation stops on its own.
   LogoWidget        the logo as a Qt widget; play() runs the same spread once
   icon(...)         a QIcon of it (menu item, window icons)
   motion_ok(mode)   the add-on's Animations setting (system | on | off) for Qt widgets
@@ -63,7 +67,8 @@ def svg(base: str, night: bool, size: int, cls: str = "", style: str = "") -> st
 
 
 # The dots start together at the top and spread around the ring, all moving clockwise.
-# loop: spread, a short rest, then gather back to the top the same way round, and again.
+# loop: spread, a short rest, then gather back to the top the same way round; three times,
+# then it rests spread out (see the note above).
 SCRIPT = """
 window.hmLogo = window.hmLogo || function (svg, loop, still) {
     if (!svg) return;
@@ -81,6 +86,7 @@ window.hmLogo = window.hmLogo || function (svg, loop, still) {
     function spread(e) { return [0, 1, 2].map(function (i) { return -90 - 360 * (1 - e) + 120 * i * e; }); }
     function gather(e) { return [0, 1, 2].map(function (i) { return -90 + 120 * i + (360 - 120 * i) * e; }); }
     var SPREAD = %SPREAD%, REST = 250, GATHER = 700, REST2 = 150, t0 = null;
+    var CYCLE = SPREAD + REST + GATHER + REST2, LOOPS = 3;     // then it rests, spread out
     put(spread(0));
     function frame(ts) {
         if (!svg.isConnected) return;
@@ -91,7 +97,8 @@ window.hmLogo = window.hmLogo || function (svg, loop, still) {
             if (t < SPREAD) requestAnimationFrame(frame);
             return;
         }
-        t = t % (SPREAD + REST + GATHER + REST2);
+        if (t >= LOOPS * CYCLE + SPREAD) { put(spread(1)); return; }
+        t = t % CYCLE;
         if (t < SPREAD) put(spread(out(t / SPREAD)));
         else if (t < SPREAD + REST) put(spread(1));
         else if (t < SPREAD + REST + GATHER) put(gather(inout((t - SPREAD - REST) / GATHER)));

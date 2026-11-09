@@ -20,13 +20,30 @@ def setup(get_config) -> None:
     _get_config = get_config
 
 
+def software() -> bool:
+    """Anki is drawing its pages without the graphics chip (Preferences → Video driver:
+    Software, common on Remote Desktop, virtual machines and old graphics drivers)."""
+    try:
+        from aqt import mw
+        from aqt.profiles import VideoDriver
+        return mw.pm.video_driver() == VideoDriver.Software
+    except Exception:
+        return False
+
+
+def chosen(value) -> bool:
+    """The setting's effect: True / False as chosen, or None (never set) = on only when
+    Anki draws without the graphics chip, where the blur makes scrolling stutter."""
+    return software() if value is None else bool(value)
+
+
 def on(cfg: dict | None = None) -> bool:
     if cfg is None:
         try:
             cfg = _get_config() or {}
         except Exception:
             return False
-    return bool(cfg.get("low_power", False))
+    return chosen(cfg.get("low_power"))
 
 
 def motion(cfg: dict) -> str:

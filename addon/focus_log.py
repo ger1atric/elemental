@@ -67,10 +67,10 @@ def path() -> str | None:
 # ──────────────────────────────────────────────────────────────
 # Recording
 # ──────────────────────────────────────────────────────────────
-def _connect() -> sqlite3.Connection:
+def _connect(path: str | None = None) -> sqlite3.Connection:
     """A connection for one write. Nothing stays open between answers: Windows can't move
     user_files (Anki does that on every update) while a file in it is open."""
-    db = sqlite3.connect(_path, timeout=1.0)
+    db = sqlite3.connect(path or _path, timeout=1.0)
     no_ckpt = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
     if no_ckpt is not None:
         try:
@@ -111,7 +111,29 @@ def _open() -> None:
 
 def _close() -> None:
     global _path, _cur, _today
+    _flush()
     _cur, _today, _path = None, [], None
+
+
+_writer = None      # one background thread for the writes, so they stay in order
+
+
+def _write(path: str, row) -> None:
+    db = _connect(path)
+    try:
+        db.execute("INSERT INTO log VALUES (?, ?, ?, ?, ?, ?)", row)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _flush() -> None:
+    """Wait for the writes still queued (the profile is closing: nothing may stay open)."""
+    if _writer is not None:
+        try:
+            _writer.submit(lambda: None).result(timeout=3)
+        except Exception:
+            pass
 
 
 def _on_question(card) -> None:
@@ -140,16 +162,20 @@ def _on_answered(reviewer, card, ease) -> None:
     a0 = c["a0"] if c["a0"] is not None else now
     row = (card.id, int(time.time() * 1000), round(a0 - c["q0"], 2), round(now - a0, 2),
            round(away, 1), c["edit"])
-    try:
-        db = _connect()
-        try:
-            db.execute("INSERT INTO log VALUES (?, ?, ?, ?, ?, ?)", row)
-            db.commit()
-        finally:
-            db.close()
-    except Exception:
-        return
+    # The day's rows are read from memory (today_index), so the file write can happen off
+    # the main thread: opening a file can take a while on Windows, with antivirus scanning it.
     _today.append(row)
+    global _writer
+    try:
+        if _writer is None:
+            from concurrent.futures import ThreadPoolExecutor
+            _writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="elemental-focus-log")
+        _writer.submit(_write, _path, row)
+    except Exception:
+        try:
+            _write(_path, row)
+        except Exception:
+            pass
 
 
 def _drop_current(*_args) -> None:

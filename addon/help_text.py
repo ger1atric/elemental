@@ -14,6 +14,9 @@ HELP = {
     # General
     "avg_combo": ("Your daily average is worked out over this stretch of time. When you hover a day, "
                   "it's compared against this average."),
+    "chk_sep_months": "Each month in its own block, with a gap between.",
+    "chk_forecast_shading": "In Volume view, future days in their own color, darker on days with more cards due.",
+    "weeks_ahead_spin": "Empty weeks after this one when the heatmap opens. Scroll left for older history.",
     "time_scale_spin": "How many minutes it takes for a day to show up in full color. At Auto, your longest day sets the top.",
     "nc_scale_spin": "How many new cards it takes for a day to show up in full color. At Auto, your biggest day sets the top.",
     "chk_show_focus_mode": ("Adds a Focus view, where each day is colored by how focused you were. A card counts "
@@ -22,7 +25,8 @@ HELP = {
 
     # Theme
     "chk_glass": "Makes the box around the heatmap look like frosted glass, so the background softly shows through.",
-    "chk_low_power": "For slower computers. Turns off the frosted-glass blur and all animations, here and in the review pill.",
+    "chk_low_power": ("For slower computers. Turns off the frosted-glass blur and all animations, here and in Live Stats. "
+                      "On by itself when Anki's video driver is set to Software."),
     "animations_combo": ("Little touches like the graph drawing itself in, or today's square glowing when you "
                          "finish. Follow system turns them off if your computer is set to reduce motion, and "
                          "Always plays them regardless."),
@@ -123,19 +127,19 @@ HELP = {
 
     # Review Pill
     "rp_style": ("Graph shows a small line of how your recent answers went. Numbers shows your percentage and "
-                 "how many you can still miss. Only when I hover keeps the pill quiet until you hover over it."),
-    "rp_target": ("The retention you're aiming for. The pill tells you how many more cards you can miss, or "
+                 "how many you can still miss. Only when I hover keeps Live Stats quiet until you hover over it."),
+    "rp_target": ("The retention you're aiming for. Live Stats tells you how many more cards you can miss, or "
                   "how many you need to get right, to stay there."),
     "rp_window": "Whether your retention counts just today's reviews, or every review you've done in this deck.",
-    "chk_rp_focus": ("The pill turns amber when several recent cards took you a lot longer than usual. That can "
+    "chk_rp_focus": ("Live Stats turns amber when several recent cards took you a lot longer than usual. That can "
                      "be a sign your mind is wandering."),
-    "rp_ring": ("A quick ring around the pill after each answer. It's green if the card took about as long as "
+    "rp_ring": ("A quick ring around Live Stats after each answer. It's green if the card took about as long as "
                 "usual, and amber if it took longer. Cards you looked something up for don't get one."),
-    "chk_rp_pomo": ("A countdown at the end of the pill. When a block ends, the break starts by itself, and "
-                    "the next block starts when it's over. After the long break, a new set begins. Click the pill "
+    "chk_rp_pomo": ("A countdown at the end of Live Stats. When a block ends, the break starts by itself, and "
+                    "the next block starts when it's over. After the long break, a new set begins. Click Live Stats "
                     "to pause a block or end a break early. Hover it to end the session, or start a new one."),
     "chk_rp_pomo_pause": "The block only counts time on the review screen, so stepping away doesn't use it up.",
-    "chk_rp_pomo_drift": ("When several cards in a row take much longer than usual, the pill offers a break "
+    "chk_rp_pomo_drift": ("When several cards in a row take much longer than usual, Live Stats offers a break "
                           "early. Needs Time Left turned on."),
     "chk_rp_pomo_notify": "A notification when a break ends, if you've switched away from Anki.",
 

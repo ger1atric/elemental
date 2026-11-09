@@ -1,12 +1,12 @@
 """
-Review pill — a small live marker on the review screen with your retention for
+Live Stats (once "review pill") — a small live marker on the review screen with your retention for
 the deck you're studying and the margin to your target:
 
   • Above target → how many more cards you can get WRONG before dropping below.
   • Below target → how many more you need to get RIGHT to reach the target.
 
 Hover it for the details and, with Time Left on, when you'll finish and a cue when
-you seem to be drifting. Settings → Review Pill. Off by default.
+you seem to be drifting. Settings → Live Stats. Off by default.
 
 Retention is read straight from the review log for the studied deck and all its
 subdecks (today's reviews by default), with the heatmap's retention rule: new cards
@@ -30,7 +30,7 @@ from pathlib import Path
 from aqt import mw, gui_hooks
 from aqt.qt import QTimer
 
-from . import estimator, time_left, pomodoro
+from . import estimator, time_left, pomodoro, lowpower
 from .icons import icon
 
 REVIEW_PILL_API = 1
@@ -65,6 +65,7 @@ def setup(get_config, write_config, addon_name: str) -> None:
     gui_hooks.reviewer_did_answer_card.append(_on_answer)
     gui_hooks.reviewer_did_show_question.append(_on_show_question)
     gui_hooks.reviewer_will_end.append(_remove_marker)
+    gui_hooks.webview_will_set_content.append(_on_set_content)
     gui_hooks.profile_did_open.append(_migrate)
     time_left.listeners.append(_schedule_update)
     from . import focus_log
@@ -697,7 +698,7 @@ RING_FRESH_MS = 5000        # ring only for an answer this recent (not after und
 
 def _low_power() -> bool:
     """Low-power mode (lowpower.py): no blur behind the pill, no ring after each answer."""
-    return bool(_raw().get("low_power", False))
+    return lowpower.chosen(_raw().get("low_power"))
 
 
 def _ring(cfg: dict) -> dict | None:
@@ -727,12 +728,29 @@ RING_LOG_KEEP = 300
 _ring_log_seen = [0]
 
 
+_log_writer = None
+
+
 def ring_log(line: str) -> None:
+    """Add a line, off the main thread: this runs on every answer, and opening a file can
+    take a while on Windows with antivirus scanning it."""
+    global _log_writer
+    stamped = f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S}  {line}\n"
+    try:
+        if _log_writer is None:
+            from concurrent.futures import ThreadPoolExecutor
+            _log_writer = ThreadPoolExecutor(max_workers=1, thread_name_prefix="elemental-ring-log")
+        _log_writer.submit(_write_ring_log, stamped)
+    except Exception:
+        pass
+
+
+def _write_ring_log(stamped: str) -> None:
     path = os.path.join(os.path.dirname(__file__), "user_files", "ring_debug.log")
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
-            f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S}  {line}\n")
+            f.write(stamped)
         if os.path.getsize(path) > RING_LOG_KEEP * 200:
             with open(path, encoding="utf-8") as f:
                 lines = f.readlines()[-RING_LOG_KEEP:]
@@ -1026,6 +1044,27 @@ def _smooth_path(pts: list) -> str:
     return out
 
 
+_marker_page = None     # the reviewer page marker.js was last sent to (it stays across cards)
+
+
+def marker_missing() -> None:
+    """The reviewer page lost the script (reloaded): send it again with the next update."""
+    global _marker_page
+    _marker_page = None
+    _schedule_update()
+
+
+def _on_set_content(web_content, context) -> None:
+    # The reviewer page is drawn anew (entering review, a theme change): no script on it yet
+    global _marker_page
+    try:
+        from aqt.reviewer import Reviewer
+        if isinstance(context, Reviewer):
+            _marker_page = None
+    except Exception:
+        pass
+
+
 def _remove_marker() -> None:
     """Remove the marker from whatever page the reviewer web is showing."""
     try:
@@ -1047,19 +1086,32 @@ def _time_api():
     return time_left if time_left.enabled() else None
 
 
-def _reviewer_estimate(did: int) -> dict | None:
-    api = _time_api()
-    if api is None:
-        return None
+def _reviewer_counts():
     try:
         # The reviewer's own queue counts (what the top bar shows) — no extra
         # scheduler work, and the card on screen still counts as left.
-        counts = mw.reviewer._v3.counts()[1]
+        return mw.reviewer._v3.counts()[1]
     except Exception:
         try:
-            counts = mw.col.sched.counts()
+            return mw.col.sched.counts()
         except Exception:
             return None
+
+
+_est_ready = None       # (deck id, estimate) worked out off the main thread for the next build
+
+
+def _reviewer_estimate(did: int) -> dict | None:
+    global _est_ready
+    if _est_ready is not None and _est_ready[0] == did:
+        est, _est_ready = _est_ready[1], None
+        return est
+    api = _time_api()
+    if api is None:
+        return None
+    counts = _reviewer_counts()
+    if counts is None:
+        return None
     return api.estimate(did, counts)
 
 
@@ -1093,9 +1145,61 @@ def _schedule_update() -> None:
     QTimer.singleShot(0, _run_update)
 
 
+_est_busy = False       # a background estimate is running
+_est_again = False      # and another update was asked for meanwhile
+
+
 def _run_update() -> None:
-    global _pending
+    global _pending, _est_busy, _est_again
     _pending = False
+    if _est_busy:           # the running one is for an older card: redo it when it lands
+        _est_again = True
+        return
+    # Time left is the slow part (every due card at every pace, ~30 ms on a big deck):
+    # work it out off the main thread, so the next card never waits on it, then draw
+    # the pill once with it.
+    prep = None
+    try:
+        if (enabled() and mw.state == "review" and getattr(mw.reviewer, "card", None) is not None
+                and _cfg().get("show_time_left", True) and _time_api() is not None):
+            counts = _reviewer_counts()
+            if counts is not None:
+                did = _current_deck_id()
+                prep = (did, time_left.estimate_prep(did, counts))
+    except Exception:
+        prep = None
+    if prep is None or prep[1] is None:
+        _draw_update()
+        return
+    _est_busy = True
+    did, inputs = prep
+
+    def work():
+        return time_left.estimate_run(inputs)
+
+    def landed(fut):
+        global _est_busy, _est_again, _est_ready
+        _est_busy = False
+        if _est_again:      # answered again meanwhile: this one's out of date
+            _est_again = False
+            _schedule_update()
+            return
+        try:
+            _est_ready = (did, fut.result())
+        except Exception:
+            _est_ready = None
+        _draw_update()
+        _est_ready = None
+
+    try:
+        # its own read-only connection, not Anki's: no waiting behind Anki's collection work
+        mw.taskman.run_in_background(work, landed, uses_collection=False)
+    except Exception:
+        _est_busy = False
+        _draw_update()
+
+
+def _draw_update() -> None:
     hold = getattr(_get_config, "hold", None)
     if hold:
         hold(True)
@@ -1124,22 +1228,78 @@ def _update_marker() -> None:
     # localStorage) overrides it and persists across cards/restarts.
     payload["corner"] = _POSITIONS.get(cfg["position"], _POSITIONS["top-right"])
     payload["draggable"] = bool(cfg.get("draggable", True))
-    mw.reviewer.web.eval(_MARKER_JS + "\nwindow.RTMarker.update(" + json.dumps(payload) + ");")
+    global _marker_page
+    data = json.dumps(payload)
+    page = id(mw.reviewer.web.page())
+    if _marker_page == page:
+        # the script is already on this page (it stays across cards): just the numbers; if
+        # the page was reloaded some other way, it asks for the script again
+        mw.reviewer.web.eval(f"if (window.RTMarker) window.RTMarker.update({data}); "
+                             "else pycmd('heatmap:rt:missing');")
+    else:
+        mw.reviewer.web.eval(_MARKER_JS + "\nwindow.RTMarker.update(" + data + ");")
+        _marker_page = page
 
 
 # ──────────────────────────────────────────────────────────────
 # Hooks
 # ──────────────────────────────────────────────────────────────
-def _on_answer(reviewer, card, ease: int) -> None:
-    # Defer until after Anki has advanced to the next card (or moved to the
-    # overview when finished). _update_marker then either refreshes the number
-    # for the next card or removes the marker if there's no card left.
+# The card comes first: Anki plays its audio and then draws it in the page, and anything
+# done on the main thread or in the page meanwhile holds the card back. So the pill (and
+# the ring after an answer) waits until the card is on screen. Anki's page shows each card
+# through a queue (images, the card's HTML, MathJax, then visible); a step added to the
+# end of it runs once the card is up, and a frame later the page tells us
+# (heatmap:rt:shown:<n>). If that never comes (an older Anki, a page reload), a timer
+# updates it anyway.
+SHOWN_FALLBACK_MS = 1500
+_SHOWN_JS = ("(function(){function go(){requestAnimationFrame(function(){setTimeout(function(){"
+             "pycmd('heatmap:rt:shown:%d');},0);});}"
+             "if(window._queueAction)_queueAction(go);else go();})();")
+_shown_asked = 0        # the latest card we're waiting on
+_shown_done = 0         # the latest one handled
+_questions = 0          # question hooks so far (did one follow an answer?)
+
+
+def _wait_for_card() -> None:
+    global _shown_asked
+    _shown_asked += 1
+    n = _shown_asked
+    try:
+        mw.reviewer.web.eval(_SHOWN_JS % n)
+    except Exception:
+        card_shown(n)
+        return
+    QTimer.singleShot(SHOWN_FALLBACK_MS, lambda: card_shown(n))
+
+
+def card_shown(n) -> None:
+    """The card is on screen (from the page, or the fallback timer): update the pill."""
+    global _shown_done
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return
+    if n != _shown_asked or n <= _shown_done:
+        return              # an older card, or already done
+    _shown_done = n
     _schedule_update()
+
+
+def _on_answer(reviewer, card, ease: int) -> None:
+    # The next card's question hook follows in the same pass and waits for that card to be
+    # drawn. Without one (reviews finished), update now: that takes the pill away.
+    if not enabled():
+        return
+    seen = _questions
+    QTimer.singleShot(0, lambda: _questions == seen and _schedule_update())
 
 
 def _on_show_question(card) -> None:
-    # Webview reloads each card, wiping the marker div — re-inject.
-    _schedule_update()
+    # Webview reloads each card, wiping the marker div — re-inject, once the card is up.
+    global _questions
+    _questions += 1
+    if enabled():
+        _wait_for_card()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1201,9 +1361,15 @@ def preview_payload(overrides: dict, night: bool, show_left: bool) -> dict | Non
         g.update(saved)
 
 
-def preview_page(payload: dict | None, corner: str, night: bool) -> str:
-    """A small review screen with the pill on it, its panel held open."""
-    bg, fg = ("#2f2f31", "#d8d8d8") if night else ("#ffffff", "#333333")
+def preview_page(payload: dict | None, corner: str, night: bool, photo: tuple | None = None) -> str:
+    """A small review screen with the pill on it, its panel held open. photo: (path relative
+    to the add-on folder, strength) of the background photo shown behind reviews, if any;
+    the page is loaded with the add-on folder as its base."""
+    bg, fg = ("#2c2c2c", "#ececee") if night else ("#ffffff", "#333333")      # Anki's dark canvas
+    photo_css = ""
+    if photo and photo[0]:
+        photo_css = (f'body::before{{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;'
+                     f'background:url("{photo[0]}") center/cover no-repeat;opacity:{float(photo[1]):.3f}}}')
     if payload is None:
         body = f'<div class="empty">Switch on Retention or When you\'ll finish to see the pill.</div>'
         script = ""
@@ -1215,16 +1381,37 @@ def preview_page(payload: dict | None, corner: str, night: bool) -> str:
                   "var s=document.createElement('style');s.textContent='.panel{opacity:1!important;"
                   "visibility:visible!important;transform:none!important}';h.shadowRoot.appendChild(s);})();"
                   "</script>")
-        # the card's text on the side away from the pill's panel
-        side = "right:24px;text-align:right" if "left" in corner else "left:24px;text-align:left"
-        body = f'<div class="card" style="{side}">Which heart valve<br>closes at S1?</div>'
+        # A cloze card and Anki's answer bar, on the side away from the pill's panel
+        side = "right:0" if "left" in corner else "left:0"
+        body = (f'<div class="side" style="{side}">'
+                '<div class="card">S1 (“lub”) is the sound of the '
+                '<span class="cloze">[...]</span> valves closing</div>'
+                '<div class="hint">Cardiology · Heart sounds</div>'
+                '<div class="bar"><div class="counts"><span class="n">20</span> + '
+                '<span class="l">4</span> + <span class="r">120</span></div>'
+                '<div class="btn">Show Answer</div></div></div>')
+    # clozes as the Clean Reading card style draws them: blue on a faint blue tint
+    cloze, tint, muted = ("#0a84ff", "rgba(10,132,255,.12)", "#8e8e93") if night else ("#0a6cff", "rgba(10,108,255,.07)", "#8a8a8e")
+    new_c, lrn_c, rev_c = ("#93c5fd", "#fca5a5", "#86efac") if night else ("#2563eb", "#dc2626", "#16a34a")
+    btn_bg, btn_bd, bar_bd = (("rgba(255,255,255,.07)", "rgba(255,255,255,.12)", "rgba(255,255,255,.10)") if night
+                              else ("#ffffff", "#c8c8cc", "#e5e5ea"))
     return (f"<!doctype html><html><head><meta charset='utf-8'><style>"
-            f"html,body{{margin:0;height:100%;background:{bg};color:{fg};overflow:hidden;"
+            f"html{{background:{bg}}}html,body{{margin:0;height:100%;color:{fg};overflow:hidden;"
             f"font-family:-apple-system,'Segoe UI',Roboto,sans-serif}}"
-            f".card{{position:absolute;top:50%;transform:translateY(-50%);max-width:45%;"
-            f"font-size:20px;line-height:1.35;opacity:.85}}"
+            f".side{{position:absolute;top:0;bottom:0;width:56%;display:flex;flex-direction:column;"
+            f"align-items:center;justify-content:center;text-align:center}}"
+            f".card{{font-size:20px;line-height:1.45;max-width:78%}}"
+            f".cloze{{color:{cloze};font-weight:650;background:{tint};border-radius:.3em;padding:0 .2em}}"
+            f".hint{{margin-top:14px;font-size:11px;letter-spacing:.02em;color:{muted}}}"
+            f".bar{{position:absolute;left:12%;right:12%;bottom:0;padding:8px 0 12px;"
+            f"border-top:1px solid {bar_bd};display:flex;flex-direction:column;align-items:center;gap:6px}}"
+            f".counts{{font-size:12px;color:{muted}}}"
+            f".counts .n{{color:{new_c}}} .counts .l{{color:{lrn_c}}} .counts .r{{color:{rev_c}}}"
+            f".counts span{{font-weight:600}}"
+            f".btn{{font-size:13px;padding:5px 18px;border-radius:6px;background:{btn_bg};"
+            f"border:1px solid {btn_bd};color:{fg}}}"
             f".empty{{padding:40px;text-align:center;opacity:.6;font-size:13px}}"
-            f"</style></head><body class='{'nightMode' if night else ''}'>{body}{script}</body></html>")
+            f"{photo_css}</style></head><body class='{'nightMode' if night else ''}'>{body}{script}</body></html>")
 
 
 def preview_ring_js(kind: str, style: str, n: int) -> str:

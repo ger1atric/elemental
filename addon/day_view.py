@@ -87,8 +87,10 @@ def _firsts(conn, cids) -> dict:
     cids = list(cids)
     for i in range(0, len(cids), 900):
         part = ",".join(str(int(c)) for c in cids[i:i + 900])
-        out.update(conn.execute(f"SELECT cid, MIN(id) FROM revlog WHERE type < 4 AND cid IN ({part}) "
-                                "GROUP BY cid").fetchall())
+        # One index probe per card (about 3x faster here than GROUP BY over the IN list)
+        out.update((cid, first) for cid, first in conn.execute(
+            "SELECT c.id, (SELECT MIN(x.id) FROM revlog x WHERE x.cid = c.id AND x.type < 4) "
+            f"FROM cards c WHERE c.id IN ({part})") if first is not None)
     return out
 
 
@@ -97,8 +99,19 @@ def _totals(rows, firsts, ro, exclude_new) -> dict:
     every answer but a card's first view (with exclude_new, none of a new card's
     answers on the day you met it)."""
     days = {}
+    # A day changes only at (local) midnight, which is always on a 15-minute mark, so
+    # look each 15-minute stretch's date up once rather than once per answer.
+    shift, when = ro * 3600, {}
+
+    def day_of(ms_id):
+        k = (ms_id // 1000 - shift) // 900
+        d = when.get(k)
+        if d is None:
+            d = when[k] = datetime.date.fromtimestamp(k * 900)
+        return d
+
     for rid, cid, ease, ms, rtype in rows:
-        d = datetime.date.fromtimestamp(rid / 1000 - ro * 3600)
+        d = day_of(rid)
         t = days.setdefault(d, [0, 0, 0, 0, 0])
         t[0] += 1
         t[1] += ms
@@ -106,15 +119,37 @@ def _totals(rows, firsts, ro, exclude_new) -> dict:
         first_view = rid == fid and rtype == 0
         if first_view:
             t[4] += 1
-        if first_view or (exclude_new and datetime.date.fromtimestamp(fid / 1000 - ro * 3600) == d):
+        if first_view or (exclude_new and day_of(fid) == d):
             continue
         t[2] += 1
         t[3] += ease > 1
     return days
 
 
+_usual_cache = {}       # (collection, day start, decks, rollover, exclude_new, cards) -> _usual()
+
+
 def _usual(conn, start: int, deck_ids, ro, exclude_new) -> dict | None:
-    """Medians of your study days in the USUAL_DAYS before the day."""
+    """Medians of your study days in the USUAL_DAYS before the day. They only look at
+    days before it, which don't change, so each is worked out once a session (stepping
+    between days, or opening one again, is quick)."""
+    try:
+        key = (mw.col.path, start, tuple(sorted(int(d) for d in deck_ids)) if deck_ids else None, ro,
+               bool(exclude_new), conn.execute("SELECT count() FROM cards").fetchone()[0])
+    except Exception:
+        key = None
+    if key is not None and key in _usual_cache:
+        hit = _usual_cache[key]
+        return dict(hit) if hit else hit
+    out = _usual_calc(conn, start, deck_ids, ro, exclude_new)
+    if key is not None:
+        if len(_usual_cache) > 120:
+            _usual_cache.clear()
+        _usual_cache[key] = out
+    return out
+
+
+def _usual_calc(conn, start: int, deck_ids, ro, exclude_new) -> dict | None:
     lo = (start - USUAL_DAYS * 86400) * 1000
     rows = conn.execute(f"SELECT r.id, r.cid, r.ease, r.time, r.type FROM revlog r JOIN cards c ON c.id = r.cid "
                         f"WHERE r.id >= ? AND r.id < ? AND r.type < 4{_deck_sql(deck_ids)}",

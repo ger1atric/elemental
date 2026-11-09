@@ -1,5 +1,5 @@
 """
-Pomodoro timer, shown in the review pill (Settings → Review Pill → Pomodoro).
+Pomodoro timer, shown in Live Stats (Settings → Live Stats → Pomodoro).
 
 The usual cycle: a block of focus time, a short break, and after every 4th block (by
 default) a long break, then the next set starts at block 1 again.
@@ -330,7 +330,8 @@ def state() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
-# System notification (only when Anki isn't the app in front; otherwise a tooltip)
+# Notification (only when Anki isn't the app in front; otherwise a tooltip): the system's
+# on Windows and Linux, Elemental's own card on macOS (popcard)
 # ──────────────────────────────────────────────────────────────
 _tray = None
 
@@ -344,22 +345,52 @@ def _notify(title: str, body: str) -> None:
             pass
         return
     try:
-        if sys.platform == "darwin":
+        if _tray_message(title, body):
+            return
+    except Exception:
+        pass
+    try:
+        from . import popcard
+        if popcard.show(title, body, _bring_forward):     # Elemental's own card, with the logo
+            return
+    except Exception:
+        pass
+    if sys.platform == "darwin":
+        # Last resort: macOS's own, which always shows Script Editor's icon.
+        try:
             q = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
             subprocess.Popen(["osascript", "-e", f'display notification "{q(body)}" with title "Elemental" '
                                                  f'subtitle "{q(title)}"'],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-        global _tray
-        from aqt.qt import QSystemTrayIcon
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            return
-        from . import brand
-        if _tray is None:
-            _tray = QSystemTrayIcon(brand.icon("", False), mw)
-        _tray.show()
-        _tray.showMessage(title, body, brand.icon("", False), 6000)
-        QTimer.singleShot(12000, _tray.hide)
+        except Exception:
+            pass
+
+
+def _tray_message(title: str, body: str) -> bool:
+    """The system notification, sent through Anki (Qt) with Elemental's logo; clicking it
+    brings Anki forward. False when the system has no tray or tray messages, and on macOS:
+    Qt sends it with Apple's old notification API, which recent macOS drops silently."""
+    global _tray
+    from aqt.qt import QSystemTrayIcon
+    if sys.platform == "darwin":
+        return False
+    if not QSystemTrayIcon.isSystemTrayAvailable() or not QSystemTrayIcon.supportsMessages():
+        return False
+    from . import brand
+    if _tray is None:
+        _tray = QSystemTrayIcon(brand.icon("", False), mw)
+        _tray.messageClicked.connect(_bring_forward)
+    _tray.show()
+    _tray.showMessage(title, body, brand.icon("", False), 6000)
+    QTimer.singleShot(12000, _tray.hide)      # the tray icon only stays while the message is up
+    return True
+
+
+def _bring_forward() -> None:
+    try:
+        mw.show()
+        mw.raise_()
+        mw.activateWindow()
     except Exception:
         pass
 

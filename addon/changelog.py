@@ -7,32 +7,35 @@ __init__.py to match.
 from __future__ import annotations
 
 RELEASES = [
-    {"version": '1.9.5', "date": 'November 5, 2026', "notes": [
-        ('Always dark home page', "Keeps the deck list dark when Anki is light. Turn it on in Settings → Deck Browser."),
-        ('Bug fixes and speed improvements', ""),
+    {"version": '1.9.6', "date": 'November 9, 2026', "notes": [
+        ('Forecast shading', "In Volume view, future days get darker the more cards are due. Turn it off in Settings → General."),
+        ('Smoother reviews', "Cards show up right away, before Live Stats updates."),
+        ('Bug fixes', "Fixes Anki's memory use growing on the deck screen."),
+    ]},
+    {"version": '1.9.5', "date": 'November 8, 2026', "notes": [
+        ('Heatmap improvements', "Adds more heatmap display settings, like separating months, and lets you scroll back through more of your history."),
+        ('Performance improvements', ""),
+        ('Bug fixes', ""),
     ]},
     {"version": '1.9.4', "date": 'November 4, 2026', "notes": [
-        ('Pomodoro timer', "A focus timer in the review pill, with breaks in between. Turn it on in Settings → Review Pill."),
+        ('Pomodoro timer', "Adds a pomodoro timer to your daily reviews, in Live Stats. Turn it on in Settings → Live Stats."),
         ('Bug fixes and improvements', ""),
     ]},
     {"version": '1.9.3', "date": 'November 2, 2026', "notes": [
         ('New name', "Interactive Heatmap is now Elemental."),
-        ('Rolling Hills', "New installs start with the Rolling Hills theme. It looks best with Anki's dark mode (Preferences → Appearance → Theme)."),
-        ('Your stats', "A stats window for your reviews, study times and topics. Click STATS next to the heatmap's views."),
+        ('More stats', "Look back on your reviews, when you study and how each of your topics is going. Click STATS next to the heatmap's views."),
         ('Reminders', "Short reminders under your decks, like your next exam or cards not synced. Pick them in Settings → Reminders."),
-        ('Better day tooltips', "Hover a day to see how it compares to your average."),
+        ('Better heatmap tooltips', "Hover a day to see how it compares to your average."),
         ('Animations', "Small animations when you finish the day, come back to your decks, or reach a streak milestone."),
-        ('Help in Settings', "Hover the ? next to a setting to see what it does."),
         ('Bug fixes', ""),
     ]},
     {"version": '1.9.2', "date": 'October 31, 2026', "notes": [
         ('Day details', "Click a day on the heatmap to see it up close."),
-        ('Better forecast', "The forecast is more accurate and can show a likely range."),
-        ('Skip a card from focus', "Press X during review to leave a card out of your focus score."),
+        ('Better forecast', "The forecast is more accurate and can show confidence intervals."),
         ('Bug fixes', ""),
     ]},
     {"version": '1.9.1', "date": 'October 31, 2026', "notes": [
-        ('Focus score', "See how focused you were today, on the review pill and as a heatmap view."),
+        ('Focus score', "See how focused you were today, in Live Stats and as a heatmap view."),
         ('Themes and background photos', "19 themes, and photos behind your decks and reviews."),
         ('AnKing card styling', "A cleaner layout for AnKing cards."),
         ('New settings window', "A sidebar, search and live previews."),
@@ -41,7 +44,7 @@ RELEASES = [
     ]},
     {"version": '1.9.0', "date": 'October 29, 2026', "notes": [
         ('Time Left', "See how long today's cards will take."),
-        ('Review pill', "Your retention and finish time while you review."),
+        ('Live Stats', "Your retention and finish time while you review."),
     ]},
     {"version": '1.7.2', "date": 'July 3, 2026', "notes": [
         ('New and Time views', "Two more ways to color the heatmap."),

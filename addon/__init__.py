@@ -3,6 +3,7 @@
 # License: MIT
 
 import datetime
+import functools
 import time
 import json
 import os
@@ -17,7 +18,7 @@ from datetime import timedelta, date
 from aqt import mw, gui_hooks
 from aqt.qt import *
 from aqt.utils import showInfo, askUser, openFolder, tooltip
-from . import themes, changelog, brand
+from . import themes, changelog, brand, startup_cache
 
 
 def _log_exc():
@@ -35,7 +36,7 @@ except ImportError:
         QPolygonF = None
 
 ADDON_NAME = "Elemental"
-VERSION = "1.9.5"
+VERSION = "1.9.6"
 
 _home_dark_now = False      # while the home page draws with "Always dark" on (_HomeDark)
 
@@ -199,6 +200,10 @@ def check_whats_new():
     if last_version != VERSION:
         if not last_version and "heatmap_theme" not in (mw.addonManager.getConfig(__name__) or {}):
             cfg.update(FRESH_INSTALL_LOOK)      # first run ever, no theme saved yet
+        if last_version and changelog._key(last_version) < (1, 9, 5) and cfg.get("low_power") is False:
+            # Before 1.9.5 Settings saved "off" whenever it was saved, so off doesn't mean
+            # chosen: make it automatic (on only when Anki draws without the graphics chip)
+            cfg["low_power"] = None
         cfg["last_seen_version"] = VERSION
         write_config(cfg)
         releases = changelog.since(last_version)
@@ -211,6 +216,8 @@ _ONE_YEAR_AGO = (date.today() - timedelta(days=365)).strftime("%Y-%m-%d")
 DEFAULT_CONFIG = {
     "base_color": "#8e44ad",
     "forecast_color": "#bdc3c7",
+    "forecast_shade_color": "#20b2aa",     # future days, shaded by predicted cards
+    "forecast_shading": True,              # off: every forecast day in forecast_color, flat
     "today_color": "#2ecc71",
     "empty_color": "#ebedf0",
     "empty_color_night": "#282c34",
@@ -220,14 +227,16 @@ DEFAULT_CONFIG = {
     "graph_retention_color": "#f1c40f",
     "graph_forecast_color": "#95a5a6",
     "start_date": _ONE_YEAR_AGO,
-    "weeks_back": 26,
+    "weeks_back": 26,                      # (before 1.9.5; now weeks_ahead)
+    "weeks_ahead": None,                   # empty weeks after this one; None: from weeks_back
+    "separate_months": False,              # each month its own block, with a gap between
     "days_future": 21,
     "cell_size": 10,
     "cell_gap": 2,
     "border_radius": 2,
     "heatmap_width": 540,                   # the heatmap box, in px (540 to 900)
     "animations": "system",                 # deck list animations: system (off with reduce motion) | on | off
-    "low_power": False,                     # Low-power mode: no blur, no animations (lowpower.py)
+    "low_power": None,                      # Low-power mode: no blur, no animations (lowpower.py); None: only without the graphics chip
     "heatmap_theme": "custom",            # custom ("My colors": the colors below) | a key of themes.THEMES
     "display_mode": "volume",
     "show_mode_time": True,              # Show Time Studied toggle button
@@ -377,7 +386,7 @@ DEFAULT_CONFIG = {
     "review_pill_span": 100,               # Cards the retention graph spans
     "review_pill_smoothing": 2,            # Graph smoothing
     "review_pill_min_reviews": 1,          # Hide until this many reviews
-    "pomo_enabled": False,                 # Pomodoro timer in the review pill
+    "pomo_enabled": False,                 # Pomodoro timer in Live Stats
     "pomo_focus_min": 25,                  # ... focus block length
     "pomo_break_min": 5,                   # ... break length
     "pomo_long_min": 15,                   # ... long break length
@@ -1083,6 +1092,23 @@ refresh_timer = None
 
 # Short-lived cache for the FSRS simulator result (see get_fsrs_forecast)
 _FSRS_FORECAST_CACHE = {}
+_STARTUP_HOLD_UNTIL = 0.0      # until then a saved forecast isn't refreshed (Anki just started)
+STARTUP_HOLD_S = 20
+
+
+def _startup_opened():
+    global _STARTUP_HOLD_UNTIL
+    startup_cache.reset()
+    _STARTUP_HOLD_UNTIL = time.time() + STARTUP_HOLD_S
+
+
+def _startup_closed():
+    startup_cache.reset()
+
+
+gui_hooks.profile_did_open.append(_startup_opened)
+gui_hooks.profile_will_close.append(_startup_closed)
+startup_cache.setup(VERSION)
 
 # Cache for the per-day revlog aggregation (see FastEngine._aggregate_revlog);
 # keyed by revlog fingerprint so any new/undone review invalidates it.
@@ -1183,32 +1209,32 @@ FSRS_DEFAULT_WEIGHTS = [
     0.9325,  # w18: (reserved)
 ]
 
-def _get_fsrs_weights(deck_id=None):
-    """Get FSRS weights from deck config, or use defaults."""
+# Where Deck Options keeps the optimized parameters, newest FSRS first (Anki uses the
+# first that isn't empty). The snake_case names are from older versions of this add-on.
+_FSRS_PARAM_KEYS = ("fsrsParams6", "fsrsParams5", "fsrsWeights", "fsrs_params_6", "fsrs_params_5")
+
+
+def _saved_fsrs_weights(deck_id=None):
+    """The optimized FSRS parameters in this deck's preset (no deck: the current deck's),
+    or None if it has none."""
     try:
         if not mw.col:
-            return FSRS_DEFAULT_WEIGHTS
+            return None
+        if not deck_id:
+            deck_id = mw.col.decks.current()["id"]
+        conf = mw.col.decks.config_dict_for_deck_id(deck_id)
+        for key in _FSRS_PARAM_KEYS:
+            w = (conf or {}).get(key)
+            if w and len(w) >= 17:
+                return [float(x) for x in w]
+    except Exception:
+        pass
+    return None
 
-        conf = mw.col.decks.config_dict_for_deck_id(deck_id) if deck_id else None
-        if conf:
-            # Try different FSRS version keys (Anki stores as fsrs_params_X)
-            for key in ["fsrs_params_6", "fsrs_params_5", "fsrs_params_4", "fsrsWeights"]:
-                weights = conf.get(key)
-                if weights and len(weights) >= 17:
-                    return list(weights)
 
-        # Try global config with various key names
-        for key in ["fsrs_params_6", "fsrs_params_5", "fsrs_params_4", "fsrsWeights"]:
-            try:
-                global_weights = mw.col.get_config(key)
-                if global_weights and len(global_weights) >= 17:
-                    return list(global_weights)
-            except:
-                continue
-
-        return FSRS_DEFAULT_WEIGHTS
-    except:
-        return FSRS_DEFAULT_WEIGHTS
+def _get_fsrs_weights(deck_id=None):
+    """The deck preset's optimized FSRS parameters, else FSRS's defaults."""
+    return _saved_fsrs_weights(deck_id) or FSRS_DEFAULT_WEIGHTS
 
 def _get_fsrs_params(deck_id=None):
     """Check if FSRS enabled and return parameters from deck config."""
@@ -1466,23 +1492,82 @@ QToolTip {{ background: {card}; color: {text}; border: 1px solid {border}; borde
 """.format(**c)
 
 
+@functools.lru_cache(maxsize=32)
+def _theme_thumb(path, w, h):
+    """A theme card's photo, scaled to the card: decoding a full-size photo takes ~30 ms,
+    so it's done when the card is first drawn, and once a session."""
+    img = QImage(path)
+    if img.isNull():
+        return None
+    return img.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+
+
+class _FirstShow(QObject):
+    def __init__(self, widget, fn):
+        super().__init__(widget)
+        self.fn = fn
+        widget.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Show and self.fn is not None:
+            fn, self.fn = self.fn, None
+            try:
+                fn()
+            except Exception:
+                pass
+            obj.removeEventFilter(self)
+        return False
+
+
+def _when_first_shown(widget, fn):
+    """Run fn the first time widget is shown (e.g. its Settings page is opened)."""
+    _FirstShow(widget, fn)
+
+
+class _LazyCombo(QComboBox):
+    """An editable combo box whose items (items() -> list of str) are added the first time
+    it's opened or focused. Its text can be set before that."""
+
+    def __init__(self, items, parent=None):
+        super().__init__(parent)
+        self._items = items
+
+    def fill(self):
+        if self._items is None:
+            return
+        items, self._items = self._items, None
+        text = self.currentText()
+        self.blockSignals(True)     # the text stays what it was; nothing to react to
+        try:
+            self.addItems(items())
+            self.setCurrentText(text)
+        finally:
+            self.blockSignals(False)
+
+    def showPopup(self):
+        self.fill()
+        super().showPopup()
+
+    def focusInEvent(self, e):
+        self.fill()
+        super().focusInEvent(e)
+
+
 class _ThemeCard(QWidget):
     """A theme in the gallery: a small heatmap, the deck pills, and the name, drawn in the
     theme's colors for Anki's current mode."""
     W, H = 136, 108
     # cell levels (0 = no reviews … 4 = busiest); the last columns are the forecast
     _LEVELS = ["0123432101", "1234321012", "2343210123", "1232101234", "0121012343"]
+    _AHEAD = (0.9, 0.7, 0.8, 0.6, 0.75)    # forecast shading, first forecast column
+    shade = True                          # Shade forecast by cards due (set by Settings)
 
     def __init__(self, key, name, colors, night, on_pick, photo_path=None, parent=None):
         super().__init__(parent)
         self.key, self.name, self.colors, self.night, self.on_pick = key, name, colors, night, on_pick
         self.selected = False
         self.photo = None
-        if photo_path:
-            img = QImage(photo_path)
-            if not img.isNull():
-                self.photo = img.scaled(self.W, self.H, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                                        Qt.TransformationMode.SmoothTransformation)
+        self.photo_path = photo_path     # decoded when first drawn (_theme_thumb), not with the window
         self.setFixedSize(self.W, self.H)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(name)
@@ -1508,6 +1593,10 @@ class _ThemeCard(QWidget):
         p.setPen(QPen(edge, 2.2 if self.selected else 1))
         p.setBrush(bg)
         p.drawRoundedRect(QRectF(1.5, 1.5, self.W - 3, self.H - 3), 10, 10)
+        if self.photo is None and self.photo_path:
+            self.photo = _theme_thumb(self.photo_path, self.W, self.H)
+            if self.photo is None:
+                self.photo_path = None
         if self.photo is not None:
             # the photo behind a frosted panel, like the heatmap on that background
             clip = QPainterPath()
@@ -1532,7 +1621,10 @@ class _ThemeCard(QWidget):
         for r, row in enumerate(self._LEVELS):
             for col, ch in enumerate(row + "00"):
                 x, y = x0 + col * (cell + gap), y0 + r * (cell + gap)
-                if col >= 10:
+                if col >= 10 and self.shade:
+                    p.setBrush(QColor(c.get("forecast_shade_color") or DEFAULT_CONFIG["forecast_shade_color"]))
+                    p.setOpacity(self._AHEAD[r] * (1 if col == 10 else 0.7))
+                elif col >= 10:
                     p.setBrush(QColor(c["forecast_color"]))
                     p.setOpacity(0.55 if r % 2 else 0.35)
                 else:
@@ -1819,7 +1911,7 @@ class HeatmapSettingsDialog(QDialog):
             ("HEATMAP", "Day Details", "Click a day on the heatmap to see it up close. STATS by the heatmap's views shows longer stretches.",
              [unwrap(day_tab)]),
             ("REVIEWING", "Time Left & Focus", "How long today's cards will take, and your focus score.", [unwrap(time_tab)]),
-            ("REVIEWING", "Review Pill", "The pill in a corner of the review screen.", [unwrap(pill_tab)]),
+            ("REVIEWING", "Live Stats", "Your retention, time and focus in a corner of the review screen.", [unwrap(pill_tab)]),
             ("BROWSER", "Card Browser", "The look of the card browser and note editor.", [unwrap(browser_tab)]),
             ("HELP", "Feedback", "Found a bug or have an idea? Send it straight to the developer.",
              [self.create_feedback_page()]),
@@ -2429,17 +2521,29 @@ class HeatmapSettingsDialog(QDialog):
         hm_layout.addLayout(avg_layout)
 
         weeks_layout = QHBoxLayout()
-        weeks_lbl = QLabel("Weeks of History:")
-        weeks_lbl.setToolTip("How many weeks before today to show in the heatmap.\nThe remainder of the current year fills in automatically with empty cells.")
+        weeks_lbl = QLabel("Weeks ahead:")
         weeks_layout.addWidget(weeks_lbl)
-        self.weeks_back_spin = QSpinBox()
-        self.weeks_back_spin.setRange(4, 104)
-        self.weeks_back_spin.setValue(self.cfg.get('weeks_back', 26))
-        self.weeks_back_spin.setSuffix(" wks")
-        self.weeks_back_spin.setFixedWidth(75)
-        weeks_layout.addWidget(self.weeks_back_spin)
+        self.weeks_ahead_spin = QSpinBox()
+        self.weeks_ahead_spin.setRange(0, 52)
+        self.weeks_ahead_spin.setValue(_weeks_ahead(self.cfg))
+        self.weeks_ahead_spin.setSuffix(" wks")
+        self.weeks_ahead_spin.setFixedWidth(75)
+        weeks_layout.addWidget(self.weeks_ahead_spin)
         weeks_layout.addStretch()
         hm_layout.addLayout(weeks_layout)
+        self.chk_sep_months = QCheckBox("Separate months")
+        self.chk_sep_months.setChecked(bool(self.cfg.get("separate_months", False)))
+        hm_layout.addWidget(self.chk_sep_months)
+        self.chk_forecast_shading = QCheckBox("Shade forecast by cards due")
+        self.chk_forecast_shading.setChecked(bool(self.cfg.get("forecast_shading", True)))
+        _ThemeCard.shade = self.chk_forecast_shading.isChecked()
+
+        def shading(on):
+            _ThemeCard.shade = on
+            for card in getattr(self, "_theme_cards", ()):
+                card.update()
+        self.chk_forecast_shading.toggled.connect(shading)
+        hm_layout.addWidget(self.chk_forecast_shading)
 
         heatmap_group.setLayout(hm_layout)
         layout.addWidget(heatmap_group)
@@ -2776,7 +2880,8 @@ class HeatmapSettingsDialog(QDialog):
 
         self.chk_low_power = QCheckBox("Low-power mode")
         self.chk_low_power.setToolTip("For slower computers: no blur and no animations.")
-        self.chk_low_power.setChecked(bool(self.cfg.get("low_power", False)))
+        self._low_power_auto = lowpower.chosen(self.cfg.get("low_power")) if self.cfg.get("low_power") is None else None
+        self.chk_low_power.setChecked(lowpower.chosen(self.cfg.get("low_power")))
         hm_layout.addWidget(self.chk_low_power)
         self.chk_low_power.toggled.connect(lambda on: self.animations_combo.setEnabled(not on))
         self.animations_combo.setEnabled(not self.chk_low_power.isChecked())
@@ -3021,6 +3126,7 @@ class HeatmapSettingsDialog(QDialog):
             ("base_color", "Volume Color:", "#8e44ad"),
             ("today_color", "Today Cell Border:", "#2ecc71"),
             ("forecast_color", "Forecast Color:", "#bdc3c7"),
+            ("forecast_shade_color", "Forecast Shading:", "#20b2aa"),
             ("empty_color", "Empty Cell (Light):", "#ebedf0"),
             ("empty_color_night", "Empty Cell (Dark):", "#282c34"),
         ]
@@ -3295,7 +3401,7 @@ class HeatmapSettingsDialog(QDialog):
         try:
             fsrs_available = bool(mw.col.get_config("fsrs")) if mw.col else False
             if fsrs_available:
-                fsrs_weights = _get_fsrs_weights()
+                fsrs_weights = _saved_fsrs_weights(self._fsrs_weights_deck())
         except:
             pass
 
@@ -3310,7 +3416,7 @@ class HeatmapSettingsDialog(QDialog):
         # Status indicator with FSRS params info
         status = QLabel()
         if fsrs_available:
-            if fsrs_weights and fsrs_weights != FSRS_DEFAULT_WEIGHTS:
+            if fsrs_weights:
                 status.setText("Using your optimized FSRS parameters")
             else:
                 status.setText("FSRS enabled (using default parameters)")
@@ -3488,31 +3594,35 @@ class HeatmapSettingsDialog(QDialog):
         )
         adv_layout.addWidget(self.chk_fsrs_overhead)
 
-        # Show observed lapse rate and relearn fail rate so the user knows what's being applied
-        try:
-            _cutoff_ms = int(time.time() * 1000) - (90 * 86400 * 1000)
-            _n_mature      = mw.col.db.scalar(f"SELECT count() FROM revlog WHERE type=1 AND id > {_cutoff_ms}") if mw.col else 0
-            _n_lapse       = mw.col.db.scalar(f"SELECT count() FROM revlog WHERE type=1 AND ease=1 AND id > {_cutoff_ms}") if mw.col else 0
-            _n_relearn      = mw.col.db.scalar(f"SELECT count() FROM revlog WHERE type=2 AND id > {_cutoff_ms}") if mw.col else 0
-            _n_relearn_fail = mw.col.db.scalar(f"SELECT count() FROM revlog WHERE type=2 AND ease=1 AND id > {_cutoff_ms}") if mw.col else 0
-            _lapse_rate        = _n_lapse / _n_mature if _n_mature > 0 else None
-            _relearn_fail_rate = _n_relearn_fail / _n_relearn if _n_relearn > 0 else None
-        except:
-            _lapse_rate = None
-            _relearn_fail_rate = None
-        _lr_str  = f"{_lapse_rate:.1%}"        if _lapse_rate        is not None else "n/a"
-        _rfr_str = f"{_relearn_fail_rate:.1%}" if _relearn_fail_rate is not None else "n/a"
-        try:
-            _rollover = mw.col.conf.get('rollover', 4)
-            _today = datetime.datetime.fromtimestamp(time.time() - _rollover * 3600).date()
-            _profile = forecast_band.learning_profile(mw.col, None, _today, _rollover, 0)
-            _learn_str = f"{sum(_profile):.1f}" if sum(_profile) else "n/a"
-        except Exception:
-            _learn_str = "n/a"
-        lapse_info = QLabel(
-            f"  Observed: lapse rate {_lr_str}  ·  relearn fail rate {_rfr_str}"
-            f"  ·  {_learn_str} learning answers per new card"
-        )
+        # Show observed lapse rate and relearn fail rate so the user knows what's being applied.
+        # A few revlog counts (~0.1 s on a big collection): worked out when this section is first
+        # shown, not every time Settings opens.
+        def observed_text():
+            try:
+                _cutoff_ms = int(time.time() * 1000) - (90 * 86400 * 1000)
+                _n_mature      = mw.col.db.scalar(f"SELECT count() FROM revlog WHERE type=1 AND id > {_cutoff_ms}") if mw.col else 0
+                _n_lapse       = mw.col.db.scalar(f"SELECT count() FROM revlog WHERE type=1 AND ease=1 AND id > {_cutoff_ms}") if mw.col else 0
+                _n_relearn      = mw.col.db.scalar(f"SELECT count() FROM revlog WHERE type=2 AND id > {_cutoff_ms}") if mw.col else 0
+                _n_relearn_fail = mw.col.db.scalar(f"SELECT count() FROM revlog WHERE type=2 AND ease=1 AND id > {_cutoff_ms}") if mw.col else 0
+                _lapse_rate        = _n_lapse / _n_mature if _n_mature > 0 else None
+                _relearn_fail_rate = _n_relearn_fail / _n_relearn if _n_relearn > 0 else None
+            except:
+                _lapse_rate = None
+                _relearn_fail_rate = None
+            _lr_str  = f"{_lapse_rate:.1%}"        if _lapse_rate        is not None else "n/a"
+            _rfr_str = f"{_relearn_fail_rate:.1%}" if _relearn_fail_rate is not None else "n/a"
+            try:
+                _rollover = mw.col.conf.get('rollover', 4)
+                _today = datetime.datetime.fromtimestamp(time.time() - _rollover * 3600).date()
+                _profile = forecast_band.learning_profile(mw.col, None, _today, _rollover, 0)
+                _learn_str = f"{sum(_profile):.1f}" if sum(_profile) else "n/a"
+            except Exception:
+                _learn_str = "n/a"
+            return (f"  Observed: lapse rate {_lr_str}  ·  relearn fail rate {_rfr_str}"
+                    f"  ·  {_learn_str} learning answers per new card")
+
+        lapse_info = QLabel("  Observed: …")
+        _when_first_shown(lapse_info, lambda: lapse_info.setText(observed_text()))
         lapse_info.setStyleSheet("color: #7f8c8d; font-size: 10px;")
         adv_layout.addWidget(lapse_info)
 
@@ -3529,9 +3639,9 @@ class HeatmapSettingsDialog(QDialog):
 
         # Show auto-detected weights
         if fsrs_weights:
-            auto_label = QLabel(f"Auto-detected: [{', '.join(f'{w:.4f}' for w in fsrs_weights[:5])}...]")
+            auto_label = QLabel(f"From Deck Options: [{', '.join(f'{w:.4f}' for w in fsrs_weights[:5])}...]")
             auto_label.setStyleSheet("color: #7f8c8d; font-size: 9px;")
-            auto_label.setToolTip(f"Full weights from deck config:\n{', '.join(f'{w:.4f}' for w in fsrs_weights)}")
+            auto_label.setToolTip(f"The forecast deck's preset:\n{', '.join(f'{w:.4f}' for w in fsrs_weights)}")
             adv_layout.addWidget(auto_label)
 
         # Use custom weights checkbox
@@ -3552,7 +3662,7 @@ class HeatmapSettingsDialog(QDialog):
         self.fsrs_weights_input.setPlaceholderText("e.g., 0.4, 0.6, 2.4, 5.8, 4.93, 0.94, 0.86, 0.01, 1.49, ...")
         self.fsrs_weights_input.setText(self.cfg.get("fsrs_custom_weights", ""))
         self.fsrs_weights_input.setToolTip(
-            "Enter 17-19 comma-separated numbers.\n"
+            "Enter 17 to 21 comma-separated numbers.\n"
             "Copy from: Deck Options → FSRS parameters\n"
             "Example: 0.4, 0.6, 2.4, 5.8, 4.93, 0.94, 0.86, 0.01, 1.49, 0.14, 0.94, 2.18, 0.05, 0.34, 1.26, 0.29, 2.61"
         )
@@ -3560,10 +3670,9 @@ class HeatmapSettingsDialog(QDialog):
 
         # Copy from deck button
         copy_btn_row = QHBoxLayout()
-        self.fsrs_copy_weights_btn = QPushButton("Copy from selected deck")
-        self.fsrs_copy_weights_btn.setFixedWidth(160)
+        self.fsrs_copy_weights_btn = QPushButton("Copy from forecast deck")
         self.fsrs_copy_weights_btn.clicked.connect(self._copy_deck_weights)
-        self.fsrs_copy_weights_btn.setToolTip("Copy FSRS weights from currently selected deck's config")
+        self.fsrs_copy_weights_btn.setToolTip("Copy the parameters from the Forecast Deck's preset in Deck Options.")
         copy_btn_row.addWidget(self.fsrs_copy_weights_btn)
         copy_btn_row.addStretch()
         weights_input_layout.addLayout(copy_btn_row)
@@ -3653,60 +3762,35 @@ class HeatmapSettingsDialog(QDialog):
     def _update_fsrs_ret_label(self, value):
         self.fsrs_ret_label.setText(f"{value}%")
 
+    def _fsrs_weights_deck(self):
+        """The deck whose preset the forecast's parameters come from: the Forecast Deck
+        choice, else the deck you studied last (else, later, the current deck)."""
+        combo = getattr(self, "fsrs_deck_combo", None)
+        did = int((combo.currentData() if combo is not None else self.cfg.get("fsrs_forecast_deck", 0)) or 0)
+        if not did:
+            try:
+                did = FastEngine(cache_only=True)._get_most_recent_deck() or 0
+            except Exception:
+                did = 0
+        return did or None
+
     def _copy_deck_weights(self):
-        """Copy FSRS weights from current deck to the input field."""
+        """Copy the forecast deck's optimized FSRS parameters into the custom field."""
+        did = self._fsrs_weights_deck()
+        weights = _saved_fsrs_weights(did)
+        if not weights:
+            QMessageBox.warning(self, "No parameters found",
+                "This deck's preset has no optimized FSRS parameters. Optimize them in Deck Options first.")
+            return
+        name = ""
         try:
-            # Get selected deck ID from the deck checkboxes if any are checked
-            deck_id = None
-            if hasattr(self, 'deck_checkboxes'):
-                for d_id, chk in self.deck_checkboxes.items():
-                    if chk.isChecked():
-                        deck_id = d_id
-                        break
-
-            # If no deck selected, try to get current deck
-            if deck_id is None and mw.col:
-                deck_id = mw.col.decks.current()['id']
-
-            weights = None
-            source = ""
-
-            if deck_id and mw.col:
-                # Try to get weights from deck config
-                conf = mw.col.decks.config_dict_for_deck_id(deck_id)
-                if conf:
-                    # Try different FSRS version keys
-                    for key in ["fsrs_params_6", "fsrs_params_5", "fsrs_params_4", "fsrsWeights"]:
-                        w = conf.get(key)
-                        if w and len(w) >= 17:
-                            weights = list(w)
-                            source = f"deck config ({key})"
-                            break
-
-            # Try global FSRS weights if not found in deck
-            if not weights and mw.col:
-                for key in ["fsrs_params_6", "fsrs_params_5", "fsrs_params_4", "fsrsWeights"]:
-                    try:
-                        w = mw.col.get_config(key)
-                        if w and len(w) >= 17:
-                            weights = list(w)
-                            source = f"global config ({key})"
-                            break
-                    except:
-                        continue
-
-            if weights:
-                weights_str = ", ".join(f"{w:.4f}" for w in weights)
-                self.fsrs_weights_input.setText(weights_str)
-                self.chk_custom_weights.setChecked(True)
-                QMessageBox.information(self, "Success",
-                    f"Copied {len(weights)} FSRS weights from {source}.")
-            else:
-                QMessageBox.warning(self, "No Weights Found",
-                    "Could not find FSRS weights. Make sure FSRS is enabled and you have optimized parameters in Deck Options.")
-
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to copy weights: {str(e)}")
+            name = mw.col.decks.name(did) if did else mw.col.decks.current()["name"]
+        except Exception:
+            pass
+        self.fsrs_weights_input.setText(", ".join(f"{w:.4f}" for w in weights))
+        self.chk_custom_weights.setChecked(True)
+        QMessageBox.information(self, "Copied",
+            f"Copied {len(weights)} FSRS parameters" + (f" from {name}." if name else "."))
 
     def update_opacity_label(self, value):
         self.opacity_label.setText(f"{value}%")
@@ -3881,16 +3965,20 @@ class HeatmapSettingsDialog(QDialog):
         except Exception:
             tags = []
         self._day_tags = tags
-        folders = set()
-        for t in tags:
-            parts = t.split("::")
-            for k in range(1, min(len(parts), 4)):
-                folders.add("::".join(parts[:k]))
-        self.day_topic_tag = QComboBox()
+
+        def folders():
+            out = set()
+            for t in tags:
+                parts = t.split("::")
+                for k in range(1, min(len(parts), 4)):
+                    out.add("::".join(parts[:k]))
+            return [""] + sorted(out, key=str.lower)
+
+        # Thousands of folders on a big collection (AnKing): listed the first time the box
+        # is opened or typed in, not every time Settings opens.
+        self.day_topic_tag = _LazyCombo(folders)
         self.day_topic_tag.setEditable(True)
         self.day_topic_tag.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.day_topic_tag.addItem("")
-        self.day_topic_tag.addItems(sorted(folders, key=str.lower))
         self.day_topic_tag.lineEdit().setPlaceholderText("AnKing systems, else subdecks")
         comp = self.day_topic_tag.completer()
         if comp is not None:
@@ -3941,13 +4029,13 @@ class HeatmapSettingsDialog(QDialog):
         return widget
 
     def _show_as_combo(self):
-        # Finish clock or hours left. The Time Left and Review Pill tabs each have one,
+        # Finish clock or hours left. The Time Left and Live Stats tabs each have one,
         # kept in step, since it's one setting.
         c = QComboBox()
         c.addItem("Finish time (Finish ~9:40 PM)", "finish")
         c.addItem("Time left (~1h 20m left)", "left")
         c.setCurrentIndex(1 if self.cfg.get("time_show_as") == "left" else 0)
-        c.setToolTip("Hover the pill for the other one.")
+        c.setToolTip("Hover Live Stats for the other one.")
         twin = getattr(self, "time_show_as", None)
         if twin is not None:
             c.currentIndexChanged.connect(twin.setCurrentIndex)
@@ -3974,8 +4062,8 @@ class HeatmapSettingsDialog(QDialog):
                 sp.setSuffix(suffix)
             return sp
 
-        self.chk_rp_enabled = QCheckBox("Show a pill while you review")
-        self.chk_rp_enabled.setToolTip("A small pill in a corner of the review screen. Hover it for the details.")
+        self.chk_rp_enabled = QCheckBox("Show Live Stats while you review")
+        self.chk_rp_enabled.setToolTip("Your stats in a corner of the review screen. Hover it for the details.")
         self.chk_rp_enabled.setChecked(self.cfg.get("review_pill_enabled", False))
         layout.addWidget(self.chk_rp_enabled)
 
@@ -3993,10 +4081,10 @@ class HeatmapSettingsDialog(QDialog):
         rf = QFormLayout()
         self.rp_style = combo([("Graph", "graph"), ("Numbers (margin and %)", "numbers"),
                                ("Only when I hover", "hover")], rp["retention_style"])
-        self.rp_style.setToolTip("What the pill shows for retention. The hover panel always has the full numbers.")
-        rf.addRow("In the pill:", self.rp_style)
+        self.rp_style.setToolTip("What Live Stats shows for retention. The hover panel always has the full numbers.")
+        rf.addRow("Shows:", self.rp_style)
         self.rp_target = spin(50, 99, rp["target_retention"], "%")
-        self.rp_target.setToolTip("The pill tells you how many more you can miss, or how many you need right, to stay at it.")
+        self.rp_target.setToolTip("Live Stats tells you how many more you can miss, or how many you need right, to stay at it.")
         rf.addRow("Target retention:", self.rp_target)
         self.rp_window = combo([("Today", "today"), ("All time", "all")], rp["window"])
         rf.addRow("Count it over:", self.rp_window)
@@ -4029,7 +4117,7 @@ class HeatmapSettingsDialog(QDialog):
         self.rp_ring.addItem("Drawn outline", "draw")
         self.rp_ring.addItem("Gentle fade", "fade")
         self.rp_ring.addItem("Off", "off")
-        self.rp_ring.setToolTip("Green around the pill when the card took no longer than its usual time plus one\n"
+        self.rp_ring.setToolTip("Green around Live Stats when the card took no longer than its usual time plus one\n"
                                 "of its standard deviations, amber when it took longer. No ring for lookups.")
         ring_now = rp.get("ring_style", "draw") if rp.get("focus_ring", True) else "off"
         self.rp_ring.setCurrentIndex(max(0, self.rp_ring.findData(ring_now)))
@@ -4045,7 +4133,7 @@ class HeatmapSettingsDialog(QDialog):
         # Part 3: a pomodoro timer
         pc = pomodoro.cfg()
         self.chk_rp_pomo = QCheckBox("Pomodoro timer")
-        self.chk_rp_pomo.setToolTip("A focus timer at the end of the pill, with breaks in between.")
+        self.chk_rp_pomo.setToolTip("A focus timer at the end of Live Stats, with breaks in between.")
         self.chk_rp_pomo.setChecked(bool(self.cfg.get("pomo_enabled", False)))
         layout.addWidget(self.chk_rp_pomo)
         pv = QVBoxLayout()
@@ -4127,15 +4215,22 @@ class HeatmapSettingsDialog(QDialog):
             }
             night = _is_dark_mode()
             payload = review_pill.preview_payload(overrides, night, self.rp_show_as.currentData() == "left")
-            return review_pill.preview_page(payload, self.rp_corner.currentData(), night)
+            photo = None
+            try:      # the background photo, if it shows behind reviews
+                bc = background._cfg()
+                if bc["background_enabled"] and bc["background_in_review"]:
+                    photo = (background.current_path(), bc["background_opacity_review"])
+            except Exception:
+                photo = None
+            return review_pill.preview_page(payload, self.rp_corner.currentData(), night, photo)
 
-        self.rp_preview = _HtmlPreview(372, pill_html)
+        self.rp_preview = _HtmlPreview(372, pill_html, base_dir=os.path.dirname(os.path.abspath(__file__)))
         head = QHBoxLayout()
-        cap = QLabel("Preview, with sample numbers. Hovering the pill opens this panel.")
+        cap = QLabel("Preview, with sample numbers. Hovering Live Stats opens this panel.")
         cap.setStyleSheet("color: gray;")
         head.addWidget(cap, 1)
         ring_btn = QPushButton("Show the ring")
-        ring_btn.setToolTip("The ring drawn around the pill after each answer: green when the card took no\n"
+        ring_btn.setToolTip("The ring drawn around Live Stats after each answer: green when the card took no\n"
                             "longer than usual, amber when it did.")
 
         def play_ring():
@@ -4672,7 +4767,9 @@ class HeatmapSettingsDialog(QDialog):
         self.cfg['cell_shape'] = self.cell_shape_combo.currentData()
         self.cfg['heatmap_width'] = self.heatmap_width_slider.value()
         self.cfg['animations'] = self.animations_combo.currentData()
-        self.cfg['low_power'] = self.chk_low_power.isChecked()
+        # never set and left as it was: stays automatic (on only without the graphics chip)
+        lp = self.chk_low_power.isChecked()
+        self.cfg['low_power'] = None if self._low_power_auto is not None and lp == self._low_power_auto else lp
         self.cfg['enable_browser_theme'] = self.chk_browser_theme.isChecked()
         self.cfg['enable_editor_theme'] = self.chk_editor_theme.isChecked()
         self.cfg['browser_color_theme'] = self.browser_theme_combo.currentData()
@@ -4710,7 +4807,9 @@ class HeatmapSettingsDialog(QDialog):
         self.cfg['glow_contrast'] = self.glow_slider.value() / 100.0
         self.cfg['color_scale_max'] = self.color_scale_max_spin.value()
 
-        self.cfg['weeks_back'] = self.weeks_back_spin.value()
+        self.cfg['weeks_ahead'] = self.weeks_ahead_spin.value()
+        self.cfg['separate_months'] = self.chk_sep_months.isChecked()
+        self.cfg['forecast_shading'] = self.chk_forecast_shading.isChecked()
 
         self.cfg['retention_min'] = self.ret_min_input.value()
         self.cfg['retention_max'] = self.ret_max_input.value()
@@ -5369,6 +5468,18 @@ def _cards_due(col, deck_ids, today_int, now_int):
     return rev + lrn
 
 
+def _merge_day_rows(rows):
+    """Per-day total rows added up by day (pieces of the history can share a day at their
+    edges, e.g. across a clock change). Every field after the day is a count or a sum."""
+    out = {}
+    for r in rows:
+        if r[0] in out:
+            out[r[0]] = (r[0],) + tuple((a or 0) + (b or 0) for a, b in zip(out[r[0]][1:], r[1:]))
+        else:
+            out[r[0]] = tuple(r)
+    return [out[d] for d in sorted(out)]
+
+
 class FastEngine:
     def __init__(self, cache_only=False):
         self.col = mw.col
@@ -5410,13 +5521,13 @@ class FastEngine:
         return self.col.db.all(sql)
     
     def get_start_date(self):
-        weeks_back = int(self.cfg.get('weeks_back', 26))
-        raw_start = date.today() - timedelta(weeks=weeks_back)
-        # Snap back to the nearest Sunday so columns are full weeks
-        offset = (raw_start.weekday() + 1) % 7
-        return raw_start - timedelta(days=offset)
+        """The first day (a Sunday) of the heatmap as it opens: 53 weeks, ending
+        weeks_ahead weeks after this one. Older weeks load as you scroll back."""
+        today = date.today()
+        this_sunday = today - timedelta(days=(today.weekday() + 1) % 7)
+        return this_sunday - timedelta(weeks=52 - _weeks_ahead(self.cfg))
 
-    def _aggregate_revlog(self, deck_ids, rollover_ms, exclude_new, exclude_idle, idle_threshold_ms, id_hi=None):
+    def _aggregate_revlog(self, deck_ids, rollover_ms, exclude_new, exclude_idle, idle_threshold_ms, id_hi=None, id_lo=None):
         """Per-day revlog aggregates, computed fully in SQL.
 
         Returns rows of (day_str, revs, time_sum, new_cards, ret_total,
@@ -5439,6 +5550,13 @@ class FastEngine:
         r_hi = f"AND r.id < {int(id_hi)}" if id_hi is not None else ""
         fr2_hi = f"AND fr2.id < {int(id_hi)}" if id_hi is not None else ""
         r2_hi = f"AND r2.id < {int(id_hi)}" if id_hi is not None else ""
+        # Optional lower bound: only rows from id_lo on (a stretch to add to saved totals,
+        # or one piece of the history done a piece at a time). Whether a row is a card's
+        # first answer still looks at all its earlier answers; the first-answer lookup
+        # only needs the cards answered in the stretch.
+        r_lo = f"AND r.id >= {int(id_lo)}" if id_lo is not None else ""
+        fr2_lo = (f"AND fr2.cid IN (SELECT cid FROM revlog WHERE id >= {int(id_lo)}"
+                  + (f" AND id < {int(id_hi)}" if id_hi is not None else "") + ")") if id_lo is not None else ""
 
         if deck_ids:
             did_list = ",".join(str(int(d)) for d in deck_ids)
@@ -5464,7 +5582,7 @@ class FastEngine:
                 FROM (
                     SELECT fr2.cid AS cid, MIN(fr2.id) AS fid
                     FROM revlog fr2 {first_join}
-                    WHERE fr2.type < 4 {first_where} {fr2_hi}
+                    WHERE fr2.type < 4 {first_where} {fr2_hi} {fr2_lo}
                     GROUP BY fr2.cid
                 ) f
                 JOIN revlog fr ON fr.id = f.fid
@@ -5487,7 +5605,7 @@ class FastEngine:
                     FROM revlog r
                     JOIN ({first_sub}) fst ON r.cid = fst.cid
                     {deck_join}
-                    WHERE r.type < 4 {deck_where} {r_hi}
+                    WHERE r.type < 4 {deck_where} {r_hi} {r_lo}
                 ) sub
                 GROUP BY day
             """)
@@ -5507,7 +5625,7 @@ class FastEngine:
                 SUM(CASE WHEN r.type = 0 THEN 1 ELSE 0 END),
                 SUM(CASE WHEN r.type = 2 THEN 1 ELSE 0 END)
             FROM revlog r {deck_join}
-            WHERE r.type < 4 {deck_where} {r_hi}
+            WHERE r.type < 4 {deck_where} {r_hi} {r_lo}
             GROUP BY day
         """)
         if deck_ids:
@@ -5521,7 +5639,7 @@ class FastEngine:
                 COUNT(*),
                 SUM(CASE WHEN r.ease > 1 THEN 1 ELSE 0 END)
             FROM revlog r {deck_join}
-            WHERE r.type = 0 {deck_where} {r_hi}
+            WHERE r.type = 0 {deck_where} {r_hi} {r_lo}
             AND NOT EXISTS (
                 SELECT 1 FROM revlog r2 {ne_join}
                 WHERE r2.cid = r.cid AND r2.id < r.id AND r2.type < 4 {ne_where}
@@ -5609,6 +5727,86 @@ class FastEngine:
 
         return [(day, *a) for day, a in agg.items()]
 
+    def _fingerprint(self, bound):
+        """(newest answer id, number of answers) before bound: changes only if the review
+        log before it changes (an answer undone or deleted). Counted as all rows minus
+        those after it: SQLite counts a whole table from its pages, a range row by row."""
+        return tuple(self._hist_all(
+            f"SELECT (SELECT MAX(id) FROM revlog WHERE id < {int(bound)}), "
+            f"(SELECT COUNT(*) FROM revlog) - (SELECT COUNT(*) FROM revlog WHERE id >= {int(bound)})")[0]
+            or (0, 0))
+
+    def _history_rows(self, hist_key, deck_ids, rollover_ms, exclude_new, exclude_idle, idle_ms,
+                      today_start_ms, hist_fp, compute=True):
+        """The per-day totals before today: from this session's cache, else saved from an
+        earlier run (startup_cache), else (with compute) saved totals topped up with the
+        days since, else worked out in full. None when not cached and not computing."""
+        rows = _REVLOG_AGG_CACHE.get(hist_key)
+        if rows is not None:
+            return rows
+        col_path = self.col.path
+        base = [sorted(int(d) for d in deck_ids) if deck_ids else None, bool(exclude_new),
+                bool(exclude_idle), int(idle_ms), int(rollover_ms)]
+        rows = startup_cache.history_exact(col_path, base, today_start_ms, hist_fp)
+        if rows is None and compute:
+            for entry in startup_cache.history_older(col_path, base, today_start_ms)[:1]:
+                try:
+                    if self._fingerprint(entry["bound"]) != tuple(entry["fp"]):
+                        continue        # an earlier day's answers changed: start over
+                    new = self._aggregate_revlog(deck_ids, rollover_ms, exclude_new, exclude_idle, idle_ms,
+                                                 id_hi=today_start_ms, id_lo=entry["bound"])
+                    rows = _merge_day_rows([tuple(r) for r in entry["rows"]] + [tuple(r) for r in new])
+                except Exception:
+                    rows = None
+            if rows is None:
+                rows = self._aggregate_history_full(deck_ids, rollover_ms, exclude_new, exclude_idle, idle_ms,
+                                                    today_start_ms)
+            startup_cache.history_put(col_path, base, today_start_ms, hist_fp, rows)
+        if rows is not None:
+            if len(_REVLOG_AGG_CACHE) > 8:
+                _REVLOG_AGG_CACHE.clear()
+            _REVLOG_AGG_CACHE[hist_key] = rows
+        return rows
+
+    def _aggregate_history_full(self, deck_ids, rollover_ms, exclude_new, exclude_idle, idle_ms, id_hi):
+        """All the per-day totals before id_hi. Through Anki's own connection (Windows),
+        a stretch of 30 days at a time: each statement holds Anki's database while it runs,
+        and in one go that froze the window for a second or more on a big collection."""
+        from . import estimator
+        if not isinstance(self._hist_db, estimator.AnkiReader):
+            return self._aggregate_revlog(deck_ids, rollover_ms, exclude_new, exclude_idle, idle_ms, id_hi=id_hi)
+        first = self._hist_all("SELECT MIN(id) FROM revlog")[0][0]
+        if first is None:
+            return []
+        step, hi, rows = 30 * 86400 * 1000, int(id_hi), []
+        while hi > first:
+            lo = hi - step
+            rows += [tuple(r) for r in self._aggregate_revlog(
+                deck_ids, rollover_ms, exclude_new, exclude_idle, idle_ms,
+                id_hi=hi, id_lo=lo if lo > first else None)]
+            hi = lo
+        return _merge_day_rows(rows)
+
+    def prepare_history(self, deck_ids=None, retention_deck_ids=None):
+        """The slow part of get_data, ahead of it and off Anki's collection queue: the
+        per-day totals before today, for the heatmap's decks (and the retention decks).
+        Everything through this job's own connection (_hist_db)."""
+        rollover_ms = self.rollover * 3600 * 1000
+        today_date = datetime.datetime.fromtimestamp(time.time() - self.rollover * 3600).date()
+        today_str = today_date.strftime("%Y-%m-%d")
+        today_start_ms = int(time.mktime(today_date.timetuple())) * 1000 + rollover_ms
+        exclude_new = self.cfg.get("exclude_new_cards_from_retention", False)
+        exclude_idle = self.cfg.get("exclude_idle_cards", True)
+        idle_ms = int(self.cfg.get("idle_threshold_secs", 60) * 1000)
+        fp = self._fingerprint(today_start_ms)
+        scopes = [deck_ids]
+        if retention_deck_ids and not (deck_ids and sorted(deck_ids) == sorted(retention_deck_ids)):
+            scopes.append(retention_deck_ids)
+        for dids in scopes:
+            key = (tuple(dids) if dids else None, bool(exclude_new), bool(exclude_idle), idle_ms,
+                   rollover_ms, today_str, fp)
+            self._history_rows(key, dids, rollover_ms, exclude_new, exclude_idle, idle_ms, today_start_ms, fp)
+
     def _compute_rows(self, deck_ids, rollover_ms, exclude_new, exclude_idle,
                       idle_threshold_ms, today_start_ms, today_str):
         """Per-day 10-tuple aggregates for one deck filter, using the split
@@ -5632,17 +5830,11 @@ class FastEngine:
             bool(exclude_new), bool(exclude_idle), idle_threshold_ms,
             rollover_ms, today_str, hist_fp,
         )
-        hist_rows = _REVLOG_AGG_CACHE.get(hist_key)
-        if hist_rows is None and self.cache_only:
+        hist_rows = self._history_rows(hist_key, deck_ids, rollover_ms, exclude_new, exclude_idle,
+                                       idle_threshold_ms, today_start_ms, hist_fp, compute=not self.cache_only)
+        if hist_rows is None:
             self.missing = True
             hist_rows = []
-        elif hist_rows is None:
-            hist_rows = self._aggregate_revlog(
-                deck_ids, rollover_ms, exclude_new, exclude_idle,
-                idle_threshold_ms, id_hi=today_start_ms)
-            if len(_REVLOG_AGG_CACHE) > 8:
-                _REVLOG_AGG_CACHE.clear()
-            _REVLOG_AGG_CACHE[hist_key] = hist_rows
         today_agg = self._aggregate_today(
             deck_ids, rollover_ms, exclude_new, exclude_idle,
             idle_threshold_ms, id_lo=today_start_ms)
@@ -5825,20 +6017,20 @@ class FastEngine:
                 fsrs_enabled = False
         if not fsrs_enabled:
             # Use simple forecast - count cards by due date
+            # One row per due day (not per card), and the scheduler's day asked once:
+            # each sched.today is a call into Anki, and this ran once per card.
             forecast = {}
-            if deck_ids:
-                deck_filter = f"AND did IN ({','.join(map(str, deck_ids))})"
-                cards = self.col.db.list(f"SELECT due FROM cards WHERE queue IN (2,3) AND due >= {self.col.sched.today} {deck_filter}")
-            else:
-                cards = self.col.db.list(f"SELECT due FROM cards WHERE queue IN (2,3) AND due >= {self.col.sched.today}")
+            sched_today = self.col.sched.today
+            deck_filter = f"AND did IN ({','.join(map(str, deck_ids))})" if deck_ids else ""
+            rows = self.col.db.all(f"SELECT due, count() FROM cards WHERE queue IN (2,3) "
+                                   f"AND due >= {sched_today} {deck_filter} GROUP BY due")
             base_dt = datetime.datetime.strptime(today_str, "%Y-%m-%d").date()
-            for due_val in cards:
+            for due_val, n in rows:
                 try:
-                    days_diff = due_val - self.col.sched.today
-                    f_date = base_dt + timedelta(days=days_diff)
-                    f_str = f_date.strftime("%Y-%m-%d")
-                    forecast[f_str] = forecast.get(f_str, 0) + 1
-                except: pass
+                    f_str = (base_dt + timedelta(days=due_val - sched_today)).strftime("%Y-%m-%d")
+                    forecast[f_str] = forecast.get(f_str, 0) + n
+                except Exception:
+                    pass
 
         today_rate = round((today_pass_retention/today_revs_retention)*100, 1) if today_revs_retention > 0 else 0.0
         avg_time = round((today_time_ms_filtered/today_time_revs)/1000, 1) if today_time_revs > 0 else 0
@@ -5983,11 +6175,17 @@ class FastEngine:
             tuple(new_card_days), band_on, band_k,
         )
         cached = _FSRS_FORECAST_CACHE.get(cache_key)
+        if cached is None:
+            # saved by an earlier run (startup_cache): shown now, refreshed in the background
+            cached = startup_cache.forecast_get(self.col.path, cache_key)
+            if cached is not None:
+                _FSRS_FORECAST_CACHE[cache_key] = cached
         if cached is not None:
             self.fsrs_band = cached[2]
             if (time.time() - cached[0]) < 600:
                 return cached[1]
-            if self.cache_only:
+            if self.cache_only or time.time() < _STARTUP_HOLD_UNTIL:
+                # (just after startup the simulation waits: it holds Anki's backend for a second or more)
                 self.stale = True
                 return cached[1]
         if self.cache_only:
@@ -6144,6 +6342,8 @@ class FastEngine:
 
         _FSRS_FORECAST_CACHE.clear()
         _FSRS_FORECAST_CACHE[cache_key] = (time.time(), fsrs_forecast, band)
+        if fsrs_forecast is not None:
+            startup_cache.forecast_put(self.col.path, cache_key, time.time(), fsrs_forecast, band)
         return fsrs_forecast
 
     def _fsrs_band(self, values, curve, today_date, scope, dids, per_day, days, k, every_answer):
@@ -6913,6 +7113,21 @@ _STAR_SVG = ('<svg viewBox="0 0 10 10" width="1em" height="1em" style="display:i
              '<path d="M5 0.8 L6.1 3.9 L9.2 5 L6.1 6.1 L5 9.2 L3.9 6.1 L0.8 5 L3.9 3.9 Z" fill="currentColor"/></svg>')
 
 
+# The icons a day's tooltip can hold, as short marks in the page: every cell carries its
+# tooltip, and the same few icons made up about a third of the deck list's page.
+_TIP_ICONS = {"up": icon("up", "1em", 2.2), "down": icon("down", "1em", 2.2), "flag": icon("flag"),
+              "star": _STAR_SVG}
+
+
+def _tip_attr(tip: str) -> str:
+    """A tooltip as a data-tooltip value: its icons as ⟦name⟧ marks (the page puts them
+    back on hover), and escaped only as much as a quoted attribute needs (& and ")."""
+    for k, v in _TIP_ICONS.items():
+        if v in tip:
+            tip = tip.replace(v, f"\u27e6{k}\u27e7")
+    return tip.replace("&", "&amp;").replace('"', "&quot;")
+
+
 def _day_tip(day, count, ms, spd, new, ret, focus, fut, band, is_today, avg, kinds, color, note, exams, mile=None):
     """A heatmap day's tooltip: the date and time spent, reviews with a chip against your
     average, a bar split into review / learn / relearn, retention, focus, speed and new
@@ -6974,6 +7189,70 @@ def _cell_radius_css(cfg):
     # Percentages of the cell, so each shape looks the same at any cell size.
     # Square keeps a slight softening; rounded sits between it and the circle.
     return {"square": "12%", "rounded": "30%", "circle": "50%"}[_cell_shape(cfg)]
+
+
+def _weeks_ahead(cfg) -> int:
+    """Empty weeks after this one when the heatmap opens (0-52). Before 1.9.5 the setting
+    was weeks of history in a one-year window; that's carried over."""
+    v = cfg.get("weeks_ahead")
+    try:
+        v = int(v) if v is not None else 52 - int(cfg.get("weeks_back", 26))
+    except (TypeError, ValueError):
+        v = 26
+    return max(0, min(52, v))
+
+
+_OLDER = {}             # page token -> how that heatmap draws its older weeks
+_older_seq = 0
+OLDER_WEEKS = 26        # weeks per load when scrolling back
+
+
+def _older_register(start, end, hist, cells, labels, cell_w) -> str:
+    """Remember how this heatmap draws its cells, for the older weeks it loads as you
+    scroll back. The page's token, or "" when there's no older history."""
+    global _older_seq
+    days = [d for d, v in hist.items() if v]
+    if not days:
+        return ""
+    try:
+        first = date.fromisoformat(min(days))
+    except ValueError:
+        return ""
+    first -= timedelta(days=(first.weekday() + 1) % 7)       # its Sunday
+    if first >= start:
+        return ""
+    _older_seq += 1
+    tok = str(_older_seq)
+    _OLDER[tok] = {"start": start, "end": end, "first": first, "cells": cells,
+                   "labels": labels, "cell_w": cell_w}
+    for old in list(_OLDER)[:-4]:
+        _OLDER.pop(old, None)
+    return tok
+
+
+def _older_weeks(tok: str, web) -> None:
+    """The next OLDER_WEEKS weeks before what the heatmap shows, added to its left."""
+    o = _OLDER.get(tok)
+    if not o or web is None:
+        return
+    start = max(o["first"], o["start"] - timedelta(weeks=OLDER_WEEKS))
+    cells = o["cells"](start, o["start"] - timedelta(days=1)) if start < o["start"] else ""
+    o["start"] = start
+    labels, width = o["labels"](start, o["end"])
+    web.eval("window.hmOlder && hmOlder(%s, %s, %d, %s);" % (
+        json.dumps(cells), json.dumps(labels), width,
+        "true" if start <= o["first"] else "false"))
+
+
+@functools.lru_cache(maxsize=4096)
+def _rgba_css(hex_color, alpha: str) -> str:
+    """'#rrggbb' at this opacity as rgba(); the same few colors come up for every cell."""
+    try:
+        h_clean = hex_color.lstrip('#')
+        r, g, b = tuple(int(h_clean[i:i+2], 16) for i in (0, 2, 4))
+        return f"rgba({r},{g},{b},{alpha})"
+    except Exception:
+        return hex_color
 
 
 # Order of the per-view colors in each heatmap cell's data-bgs attribute.
@@ -7171,33 +7450,70 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
     num_weeks = (total_days // 7)
     total_width_px = num_weeks * cell_w
     
-    month_html = ""
-    temp_curr = start_dt
-    col_idx = 0
-    last_label_end_pos = -50 
-    
-    while temp_curr <= end_dt:
-        m_label = ""
-        for d in range(7):
-            check_day = temp_curr + timedelta(days=d)
-            if check_day.day == 1:
-                m_label = check_day.strftime("%b").upper()
-                break
-        
-        if not m_label and col_idx == 0:
-            m_label = temp_curr.strftime("%b").upper()
-            
-        if m_label:
-            left_pos = col_idx * cell_w
-            if left_pos > last_label_end_pos + 10: 
-                month_html += f'<div style="position:absolute; left:{left_pos}px;">{m_label}</div>'
-                last_label_end_pos = left_pos + 25 
-        
-        temp_curr += timedelta(days=7)
-        col_idx += 1
+    sep_months = bool(cfg.get("separate_months", False))
+    month_gap = max(4, round(cfg['cell_size'] * 0.6))     # between months, with separate_months
 
-    curr = start_dt
-    cells_html = "" 
+    def _month_name(day):
+        name = day.strftime("%b").upper()
+        return name + day.strftime(" ’%y") if day.month == 1 else name    # JAN ’26: years apart once you scroll back
+
+    def _month_labels(a, b):
+        """Month labels for the weeks from a (a Sunday) to b, and the grid's width. With
+        separate months, the week a month starts in is split in two columns, plus a gap
+        (as _cells_between lays it out), and each name is centered over its month."""
+        month_html = ""
+        temp_curr = a
+        col_idx = 0
+        x = 0
+        last_label_end_pos = -50
+        blocks = []         # separate months: [name, left, right] of each month's block
+
+        while temp_curr <= b:
+            m_label = ""
+            left_pos = x
+            for d in range(7):
+                check_day = temp_curr + timedelta(days=d)
+                if check_day.day == 1:
+                    m_label = _month_name(check_day)
+                    if sep_months:
+                        if d:       # the old month keeps this column
+                            if blocks:
+                                blocks[-1][2] = x + cfg['cell_size']
+                            x += cell_w
+                        left_pos = x + month_gap
+                        x = left_pos        # the next week's column comes right after this one
+                        blocks.append([m_label, left_pos, left_pos + cfg['cell_size']])
+                    break
+            if sep_months:
+                if not blocks:      # the first block: whatever month the grid starts in
+                    blocks.append([_month_name(temp_curr), x, x])
+                blocks[-1][2] = x + cfg['cell_size']
+            else:
+                if not m_label and col_idx == 0:
+                    m_label = _month_name(temp_curr)
+                if m_label and left_pos > last_label_end_pos + 10:
+                    month_html += f'<div style="position:absolute; left:{left_pos}px;">{m_label}</div>'
+                    last_label_end_pos = left_pos + (38 if "’" in m_label else 25)
+            temp_curr += timedelta(days=7)
+            col_idx += 1
+            x += cell_w
+
+        for name, lo, hi in blocks:
+            w = len(name) * 6 + 2               # about how wide the name is (9px bold)
+            if hi - lo >= w:
+                left = round((lo + hi - w) / 2)
+            elif lo + w <= x:                   # a month only partly shown: from its left edge
+                left = lo
+            else:
+                continue
+            if left > last_label_end_pos + 6:
+                month_html += (f'<div style="position:absolute; left:{left}px; width:{w}px; '
+                               f'text-align:center; white-space:nowrap;">{name}</div>')
+                last_label_end_pos = left + w
+        return month_html, x
+
+    month_html, total_width_px = _month_labels(start_dt, end_dt)
+
     _custom_max = int(cfg.get('color_scale_max', 0))
     max_rev = _custom_max if _custom_max > 0 else (max(hist.values()) if hist else 1)
     max_score = 1
@@ -7252,6 +7568,23 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
             return _shade_color(color, brightness), 1.0
         return color, max(min_opacity, scaled)
 
+    # Forecast days: shaded by predicted cards in their own color, on the same scale as
+    # past days (glow: placed among the days shown). Off: one flat forecast color.
+    shade_fc = bool(cfg.get('forecast_shading', True))
+    shade_c = cfg.get('forecast_shade_color') or DEFAULT_CONFIG['forecast_shade_color']
+
+    # Before the history has loaded (the first draw), scale against the forecast itself.
+    has_hist = any(v > 0 for v in hist.values())
+    fc_max = max_rev if has_hist else max(list(forecast.values()) + [1])
+
+    def forecast_fill(f):
+        if not shade_fc:
+            return cfg['forecast_color'], 0.5
+        if gradient_mode == 'glow':
+            t = glow_rank['volume'](f) if has_hist and 'volume' in glow_rank else min(1.0, f / fc_max)
+            return themes.glow(shade_c, t, glow_night, glow_contrast), 1.0
+        return scaled_fill(shade_c, min(1.0, f / max(fc_max, 1)))
+
     # Pre-compute scale ceilings for the two custom solid-color modes
     _time_max_cfg = int(cfg.get('color_scale_max_time', 0))
     _nc_max_cfg   = int(cfg.get('color_scale_max_newcards', 0))
@@ -7269,115 +7602,133 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
     except Exception:
         mile_days = {}
 
-    while curr <= end_dt:
-        d_s = curr.strftime("%Y-%m-%d")
-        mile = mile_days.get(d_s)
-        d_nice = curr.strftime("%b %d").upper()
-        count = hist.get(d_s, 0)
-        is_today = (d_s == today_str)
-        is_fut = curr > _today_dt
-        exam_list = exam_days.get(d_s, [])
-        is_exam = len(exam_list) > 0
+    def _cells_between(a, b):
+        """The grid's cells for the days from a to b."""
+        curr, cells_html = a, ""
+        m1_until = None
+        while curr <= b:
+            d_s = curr.strftime("%Y-%m-%d")
+            m1 = ""
+            if sep_months:
+                # a month starts: blanks finish this week's column and start the next one at
+                # the 1st's weekday; that column (class m1) sits after the gap
+                wd = (curr.weekday() + 1) % 7
+                if curr.day == 1:
+                    if wd:
+                        cells_html += '<div class="hm-pad"></div>' * (7 - wd) + '<div class="hm-pad m1"></div>' * wd
+                    m1_until = curr + timedelta(days=6 - wd)
+                if m1_until is not None and curr <= m1_until:
+                    m1 = " m1"
+            mile = mile_days.get(d_s)
+            d_nice = curr.strftime("%b %d").upper()
+            count = hist.get(d_s, 0)
+            is_today = (d_s == today_str)
+            is_fut = curr > _today_dt
+            exam_list = exam_days.get(d_s, [])
+            is_exam = len(exam_list) > 0
 
-        bg_hex = cfg['empty_color']
+            bg_hex = cfg['empty_color']
 
-        alpha = 0.2 if enable_glass else 0.4
+            alpha = 0.2 if enable_glass else 0.4
 
-        border = "1px solid transparent"
-        outline = "none"
-        inner_content = ""
+            border = "1px solid transparent"
+            outline = "none"
+            inner_content = ""
 
-        t_val  = time_hist.get(d_s, 0)
-        t_rev  = time_revs_hist.get(d_s, count)  # idle-filtered count for time/card
-        nc_val = new_cards_hist.get(d_s, 0)
-        spd = round((t_val/t_rev)/1000, 1) if t_rev > 0 else 0
-        ret_data = retention.get(d_s, [0, 0])
-        correct_count = ret_data[0]
-        ret_pct = round((ret_data[0]/ret_data[1])*100, 1) if ret_data[1] > 0 else 0.0
-        f_val = forecast.get(d_s, 0)
+            t_val  = time_hist.get(d_s, 0)
+            t_rev  = time_revs_hist.get(d_s, count)  # idle-filtered count for time/card
+            nc_val = new_cards_hist.get(d_s, 0)
+            spd = round((t_val/t_rev)/1000, 1) if t_rev > 0 else 0
+            ret_data = retention.get(d_s, [0, 0])
+            correct_count = ret_data[0]
+            ret_pct = round((ret_data[0]/ret_data[1])*100, 1) if ret_data[1] > 0 else 0.0
+            f_val = forecast.get(d_s, 0)
 
-        if t_rev > 0: daily_score = (t_val / t_rev) / 1000
-        else: daily_score = 0
+            if t_rev > 0: daily_score = (t_val / t_rev) / 1000
+            else: daily_score = 0
 
-        info_str = _day_tip(curr, count, t_val, spd, nc_val, ret_pct if ret_data[1] else None,
-                            focus_days[d_s][0] if d_s in focus_days else None, f_val,
-                            eng.fsrs_band.get(d_s), d_s == today_str, daily_avg, eng.kinds.get(d_s), base_c,
-                            notes.get(d_s, "").strip(), exam_list, mile)
+            info_str = _day_tip(curr, count, t_val, spd, nc_val, ret_pct if ret_data[1] else None,
+                                focus_days[d_s][0] if d_s in focus_days else None, f_val,
+                                eng.fsrs_band.get(d_s), d_s == today_str, daily_avg, eng.kinds.get(d_s), base_c,
+                                notes.get(d_s, "").strip(), exam_list, mile)
 
-        is_future_exam = is_exam and (is_fut or is_today)
+            is_future_exam = is_exam and (is_fut or is_today)
 
-        if is_future_exam:
-            # Use first exam's color for cell background
-            ex_color = exam_list[0].get("color", "#e74c3c")
-            bg_hex = ex_color
-            alpha = 1.0
-            inner_content = "<div style='display:flex;justify-content:center;align-items:center;height:100%;font-size:8px;color:#fff;font-weight:bold;'>!</div>"
+            if is_future_exam:
+                # Use first exam's color for cell background
+                ex_color = exam_list[0].get("color", "#e74c3c")
+                bg_hex = ex_color
+                alpha = 1.0
+                inner_content = "<div style='display:flex;justify-content:center;align-items:center;height:100%;font-size:8px;color:#fff;font-weight:bold;'>!</div>"
 
-        rev_c = cfg.get('graph_reviews_color', '#3498db')
-        time_c = cfg.get('graph_time_color', '#e67e22')
-        ret_c = cfg.get('graph_retention_color', '#f1c40f')
-        fut_c = cfg.get('graph_forecast_color', '#95a5a6')
-        legend_info = f"{d_nice} &nbsp;&nbsp; <span style='color:{rev_c}'>{count} REV</span>"
-        if count > 0:
-            legend_info += f" &nbsp;&nbsp; <span style='color:{time_c}'>{spd} S/C</span>"
-            legend_info += f" &nbsp;&nbsp; <span style='color:{ret_c}'>{ret_pct}% RET</span>"
-        if f_val > 0:
-            legend_info += f" &nbsp;&nbsp; <span style='color:{fut_c}'>{f_val} FUT</span>"
-        for ex in exam_list:
-            ex_label = ex.get("label", "Exam")
-            ex_color = ex.get("color", "#e74c3c")
-            legend_info += f" &nbsp;&nbsp; <span style='color:{ex_color}'>{icon('flag')} {ex_label.upper()}</span>"
+            rev_c = cfg.get('graph_reviews_color', '#3498db')
+            time_c = cfg.get('graph_time_color', '#e67e22')
+            ret_c = cfg.get('graph_retention_color', '#f1c40f')
+            fut_c = cfg.get('graph_forecast_color', '#95a5a6')
+            legend_info = f"{d_nice} &nbsp;&nbsp; <span style='color:{rev_c}'>{count} REV</span>"
+            if count > 0:
+                legend_info += f" &nbsp;&nbsp; <span style='color:{time_c}'>{spd} S/C</span>"
+                legend_info += f" &nbsp;&nbsp; <span style='color:{ret_c}'>{ret_pct}% RET</span>"
+            if f_val > 0:
+                legend_info += f" &nbsp;&nbsp; <span style='color:{fut_c}'>{f_val} FUT</span>"
+            for ex in exam_list:
+                ex_label = ex.get("label", "Exam")
+                ex_color = ex.get("color", "#e74c3c")
+                legend_info += f" &nbsp;&nbsp; <span style='color:{ex_color}'>{icon('flag')} {ex_label.upper()}</span>"
 
-        safe_legend = legend_info.replace("'", "&#39;").replace('"', "&quot;")
-        safe_tooltip = _html.escape(info_str, quote=True)
+            safe_legend = legend_info.replace("'", "&#39;").replace('"', "&quot;")
+            safe_tooltip = _tip_attr(info_str)
 
-        def mode_bg(mode):
-            """This cell's background (CSS color) in one heatmap view"""
-            m_hex, m_alpha = bg_hex, alpha
-            if mode == 'focus':
-                if not is_future_exam and d_s in focus_days:
-                    m_hex, m_alpha = _focus_color(focus_days[d_s][0], focus_range), 1.0
-                elif not is_future_exam and is_fut and f_val > 0:
-                    m_hex, m_alpha = cfg['forecast_color'], 0.5
-            elif not is_future_exam:
-                if count > 0 or (mode == 'time' and t_val > 0) or (mode == 'new_cards' and nc_val > 0):
-                    if mode == 'retention':
-                        rate = (correct_count / ret_data[1]) if ret_data[1] > 0 else 0
-                        m_hex, m_alpha = get_retention_color(rate, cfg), 1.0
-                    elif mode == 'score':
-                        real_sec = (t_val / count) / 1000 if count > 0 else 0
-                        m_hex, m_alpha = get_speed_color(real_sec, cfg), 1.0
-                    elif mode == 'time':
-                        # Solid-color gradient scaled by minutes studied
-                        time_mins = t_val / 1000 / 60
-                        m_hex, m_alpha = scaled_fill(time_cell_color, min(1.0, time_mins / max(max_time_mins, 1)), 'time', t_val)
-                    elif mode == 'new_cards':
-                        # Solid-color gradient scaled by new cards done
-                        m_hex, m_alpha = scaled_fill(nc_cell_color, min(1.0, nc_val / max(max_nc, 1)), 'new_cards', nc_val)
-                    else:
-                        m_hex, m_alpha = scaled_fill(base_c, count / max_rev, 'volume', count)
-                elif is_fut and f_val > 0:
-                    m_hex, m_alpha = cfg['forecast_color'], 0.5
-            if is_today and count == 0 and f_val == 0 and not is_exam:
-                return "transparent"
-            try:
-                h_clean = m_hex.lstrip('#')
-                r, g, b = tuple(int(h_clean[i:i+2], 16) for i in (0, 2, 4))
-                return f"rgba({r},{g},{b},{m_alpha:.2f})"
-            except Exception:
-                return m_hex
+            # Shaded by cards due in Volume; the other views keep the flat forecast color.
+            fc_flat = (cfg['forecast_color'], 0.5) if is_fut and f_val > 0 else None
+            fc_fill = forecast_fill(f_val) if fc_flat else None
 
-        mode_bgs = [mode_bg(m) for m in HEATMAP_MODES]
-        bgs_attr = ";".join(mode_bgs)
-        rgba_bg = mode_bgs[HEATMAP_MODES.index(curr_mode)] if curr_mode in HEATMAP_MODES else mode_bgs[0]
+            def mode_bg(mode):
+                """This cell's background (CSS color) in one heatmap view"""
+                m_hex, m_alpha = bg_hex, alpha
+                if mode == 'focus':
+                    if not is_future_exam and d_s in focus_days:
+                        m_hex, m_alpha = _focus_color(focus_days[d_s][0], focus_range), 1.0
+                    elif not is_future_exam and fc_flat:
+                        m_hex, m_alpha = fc_flat
+                elif not is_future_exam:
+                    if count > 0 or (mode == 'time' and t_val > 0) or (mode == 'new_cards' and nc_val > 0):
+                        if mode == 'retention':
+                            rate = (correct_count / ret_data[1]) if ret_data[1] > 0 else 0
+                            m_hex, m_alpha = get_retention_color(rate, cfg), 1.0
+                        elif mode == 'score':
+                            real_sec = (t_val / count) / 1000 if count > 0 else 0
+                            m_hex, m_alpha = get_speed_color(real_sec, cfg), 1.0
+                        elif mode == 'time':
+                            # Solid-color gradient scaled by minutes studied
+                            time_mins = t_val / 1000 / 60
+                            m_hex, m_alpha = scaled_fill(time_cell_color, min(1.0, time_mins / max(max_time_mins, 1)), 'time', t_val)
+                        elif mode == 'new_cards':
+                            # Solid-color gradient scaled by new cards done
+                            m_hex, m_alpha = scaled_fill(nc_cell_color, min(1.0, nc_val / max(max_nc, 1)), 'new_cards', nc_val)
+                        else:
+                            m_hex, m_alpha = scaled_fill(base_c, count / max_rev, 'volume', count)
+                    elif fc_flat:
+                        m_hex, m_alpha = fc_fill if mode == 'volume' else fc_flat
+                if is_today and count == 0 and f_val == 0 and not is_exam:
+                    return "transparent"
+                return _rgba_css(m_hex, f"{m_alpha:.2f}")
 
-        if is_today:
-            today_c = cfg.get('today_color', '#2ecc71')
-            outline = f"2px solid {today_c}"
+            mode_bgs = [mode_bg(m) for m in HEATMAP_MODES]
+            bgs_attr = ";".join(mode_bgs)
+            rgba_bg = mode_bgs[HEATMAP_MODES.index(curr_mode)] if curr_mode in HEATMAP_MODES else mode_bgs[0]
 
-        today_id = ' id="hm-today"' if is_today else ''
-        cells_html += f'<div{today_id} class="cell tooltip-target" style="background:{rgba_bg}; opacity:1.0; border:{border}; outline:{outline}; outline-offset:-1px;" onclick="pycmd((event.ctrlKey || event.metaKey ? \'heatmap:browse:\' : \'heatmap:note:\') + \'{d_s}\')" data-tooltip="{safe_tooltip}" data-legend="{safe_legend}" data-bgs="{bgs_attr}">{inner_content}</div>'
-        curr += timedelta(days=1)
+            if is_today:
+                today_c = cfg.get('today_color', '#2ecc71')
+                outline = f"2px solid {today_c}"
+
+            today_id = ' id="hm-today"' if is_today else ''
+            cells_html += f'<div{today_id} class="cell tooltip-target{m1}" style="background:{rgba_bg}; opacity:1.0; border:{border}; outline:{outline}; outline-offset:-1px;" onclick="pycmd((event.ctrlKey || event.metaKey ? \'heatmap:browse:\' : \'heatmap:note:\') + \'{d_s}\')" data-tooltip="{safe_tooltip}" data-legend="{safe_legend}" data-bgs="{bgs_attr}">{inner_content}</div>'
+            curr += timedelta(days=1)
+        return cells_html
+
+    cells_html = _cells_between(start_dt, end_dt)
+    older_token = _older_register(start_dt, end_dt, hist, _cells_between, _month_labels, cell_w)
 
     if total_mins >= 60:
         display_time = f"{total_mins/60:.1f}"
@@ -7754,6 +8105,8 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
         .grid {{ display: grid; grid-auto-flow: column; }}
         
         .cell {{ width: {cfg['cell_size']}px; height: {cfg['cell_size']}px; border-radius: {_cell_radius_css(cfg)}; box-sizing: border-box; }}
+        .hm-pad {{ width: {cfg['cell_size']}px; height: {cfg['cell_size']}px; }}
+        .grid .m1 {{ margin-left: {max(4, round(cfg['cell_size'] * 0.6))}px; }}
         #heatmap-root.hm-fade .cell {{ transition: background-color .2s ease; }}
         .cell:hover {{ transform: scale(1.2); transition: 0.1s; z-index: 10; }}
         
@@ -7825,6 +8178,7 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
                     clearTimeout(window.hmFadeT);
                     window.hmFadeT = setTimeout(function () {{ root.classList.remove('hm-fade'); }}, 260);
                 }}
+                window.hmModeIdx = i;
                 document.querySelectorAll('#heatmap-root .cell[data-bgs]').forEach(function(cell) {{
                     const bg = cell.getAttribute('data-bgs').split(';')[i];
                     if (bg) cell.style.background = bg;
@@ -7875,7 +8229,7 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
                 <div class="day-labels"><div>S</div><div>M</div><div>T</div><div>W</div><div>T</div><div>F</div><div>S</div></div>
                 <div class="scroll-wrapper">
                     <div class="scroll" id="heatmap-scroll">
-                        <div style="width: {total_width_px}px; position:relative; height:15px; margin-bottom:2px; font-size:9px; font-weight:700; color:#95a5a6; display:flex;">
+                        <div id="hm-months" style="width: {total_width_px}px; position:relative; height:15px; margin-bottom:2px; font-size:9px; font-weight:700; color:#95a5a6; display:flex;">
                             {month_html}
                         </div>
                         <div class="grid" style="width: max-content; grid-template-rows:repeat(7,{cfg["cell_size"]}px); gap:{cfg["cell_gap"]}px">
@@ -7938,8 +8292,13 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
                     const showRatio = {str(show_ratio).lower()};
 
                     function showTooltip(evt, el) {{
-                        const text = el.getAttribute('data-tooltip');
+                        let text = el.getAttribute('data-tooltip');
                         if(!text || !tooltip) return;
+                        // icons travel as short marks (see _tip_attr); put them back
+                        if (text.indexOf('\u27e6') >= 0) {{
+                            const icons = {json.dumps(_TIP_ICONS)};
+                            text = text.replace(/\u27e6(\\w+)\u27e7/g, function (m, k) {{ return icons[k] || m; }});
+                        }}
                         tooltip.innerHTML = text;
                         tooltip.style.display = 'block';
                         
@@ -8200,6 +8559,38 @@ def get_html_body_content(deck_ids=None, is_overview=False, retention_deck_ids=N
                     }}
                     setTimeout(() => {{ if(scrollBox) scrollBox.scrollLeft = scrollBox.scrollWidth; }}, 50);
 
+                    // Older weeks load as you scroll back near the left edge (heatmap:older)
+                    if (scrollBox && "{older_token}" && !scrollBox.hmOlderOn) {{
+                        scrollBox.hmOlderOn = true;
+                        const grid = scrollBox.querySelector('.grid');
+                        const months = document.getElementById('hm-months');
+                        let busy = false, finished = false, lastLeft = scrollBox.scrollLeft;
+                        scrollBox.addEventListener('scroll', function () {{
+                            // only on scrolling left (not the jump to the right end as it opens)
+                            const left = scrollBox.scrollLeft, back = left < lastLeft;
+                            lastLeft = left;
+                            if (busy || finished || !back || left > 300) return;
+                            busy = true;
+                            pycmd('heatmap:older:{older_token}');
+                        }}, {{passive: true}});
+                        window.hmOlder = function (cells, labels, width, last) {{
+                            const t = document.createElement('template');
+                            t.innerHTML = cells;
+                            if (window.hmModeIdx !== undefined) {{
+                                t.content.querySelectorAll('.cell[data-bgs]').forEach(function (cell) {{
+                                    const bg = cell.getAttribute('data-bgs').split(';')[window.hmModeIdx];
+                                    if (bg) cell.style.background = bg;
+                                }});
+                            }}
+                            const before = scrollBox.scrollWidth, left = scrollBox.scrollLeft;
+                            grid.prepend(t.content);
+                            if (months) {{ months.innerHTML = labels; months.style.width = width + 'px'; }}
+                            scrollBox.scrollLeft = lastLeft = left + (scrollBox.scrollWidth - before);
+                            finished = !!last;
+                            busy = false;
+                        }};
+                    }}
+
                     function applyOverviewGlass() {{
                         const tables = document.getElementsByTagName('table');
                         if (tables.length === 0) return;
@@ -8265,6 +8656,10 @@ def _warm_in_background(screen_key, deck_ids, retention_deck_ids, refresh):
     eng = FastEngine()      # reads config here, on the main thread
 
     def done(_result=None):
+        if eng.stale and time.time() < _STARTUP_HOLD_UNTIL:
+            # the forecast was left as saved, to refresh once startup has settled
+            QTimer.singleShot(int((_STARTUP_HOLD_UNTIL - time.time()) * 1000) + 500,
+                              lambda: _warm_in_background(screen_key, deck_ids, retention_deck_ids, None))
         then = _WARMING.pop(screen_key, None)
         if then:
             _FORCE_FULL_RENDER.add(screen_key)
@@ -8278,10 +8673,31 @@ def _warm_in_background(screen_key, deck_ids, retention_deck_ids, refresh):
     def failed(err):
         _WARMING.pop(screen_key, None)
         print("Elemental: background update failed:", err)
+        _end_loading(screen_key)
 
-    # Mostly collection reads (fingerprints, today's rows, the FSRS simulation),
-    # so it runs on Anki's collection executor like any QueryOp; only the long
-    # history statements use the job's own connection.
+    # Two steps. First the slow part, the per-day totals of the whole review log, on the
+    # job's own read-only connection (Anki's on Windows, a stretch at a time) and off
+    # Anki's collection queue, so opening a deck or syncing doesn't wait behind it. Then
+    # the rest (fingerprints, today's rows, the FSRS simulation) as a QueryOp on
+    # Anki's queue, as before: quick now the totals are ready.
+    path = mw.col.path
+
+    def history():
+        from . import estimator
+        try:
+            eng._hist_db = estimator.connect(path)
+        except Exception:
+            eng._hist_db = None
+            return
+        try:
+            eng.prepare_history(deck_ids, retention_deck_ids)
+        finally:
+            try:
+                eng._hist_db.close()
+            except Exception:
+                pass
+            eng._hist_db = None
+
     def op(col):
         from . import estimator
         try:
@@ -8294,13 +8710,46 @@ def _warm_in_background(screen_key, deck_ids, retention_deck_ids, refresh):
             if eng._hist_db is not None:
                 eng._hist_db.close()
 
+    def rest(_fut=None):
+        if mw.col is None or mw.col.path != path:
+            _WARMING.pop(screen_key, None)
+            return
+        try:
+            QueryOp(parent=mw, op=op, success=done).failure(failed).run_in_background()
+        except Exception:
+            # no background job possible: redraw, working it out there, the old way
+            _log_exc()
+            then = _WARMING.pop(screen_key, None)
+            if then:
+                _FORCE_FULL_RENDER.add(screen_key)
+                then()
+
     try:
-        QueryOp(parent=mw, op=op, success=done).failure(failed).run_in_background()
+        time_left._background(history, rest)
     except Exception:
         _log_exc()
         _WARMING.pop(screen_key, None)
         return False
     return True
+
+
+_END_LOADING_JS = """(function(){
+  var m = document.getElementById('hm-loadmark'); if (m) m.remove();
+  [].forEach.call(document.querySelectorAll('.hm-loading'), function (e) { e.classList.remove('hm-loading'); });
+})();"""
+
+
+def _end_loading(screen_key):
+    """A background job failed, so no redraw is coming: take the screen out of its loading
+    look. The next time it's drawn, the job is tried again."""
+    _PLACEHOLDER.discard(screen_key)
+    try:
+        if screen_key == "deckBrowser" and mw.state == "deckBrowser":
+            mw.deckBrowser.web.eval(_END_LOADING_JS)
+        elif isinstance(screen_key, tuple) and screen_key[0] == "overview" and mw.state == "overview":
+            mw.overview.web.eval(_END_LOADING_JS)
+    except Exception:
+        _log_exc()
 
 
 def _main_heatmap_args(cfg):
@@ -8698,8 +9147,20 @@ def _render(deck_browser, content):
 
 def on_msg(h, m, c):
     if m == "heatmap:settings": open_settings(); return True, None
+    if m == "heatmap:rt:missing":
+        review_pill.marker_missing()
+        return True, None
+    if m.startswith("heatmap:rt:shown:"):
+        review_pill.card_shown(m[len("heatmap:rt:shown:"):])
+        return True, None
     if m.startswith("heatmap:ringlog:"):
         review_pill.on_ring_report(m[len("heatmap:ringlog:"):])
+        return True, None
+    if m.startswith("heatmap:older:"):
+        try:
+            _older_weeks(m[len("heatmap:older:"):], getattr(c, "web", None))
+        except Exception:
+            _log_exc()
         return True, None
     if m == "heatmap:pomo:click":
         pomodoro.click()
@@ -9024,18 +9485,60 @@ def _patch_timer_refresh():
 _patch_timer_refresh()
 
 
-def _home_dark_page(web_content, context):
-    """With "Always dark" on and Anki light: the deck list page gets Anki's own dark-mode
-    marks (so its CSS and ours turn dark) before anything paints, and a dark backdrop."""
+_HOME_SCREENS = ("deckBrowser", "overview")
+
+# Anki's own dark/light marks on a page that's already up (as Anki does on a theme change)
+_DARK_MARKS_JS = """(function(dark){
+    var doc = document.documentElement, body = document.body;
+    doc.classList.toggle('night-mode', dark);
+    doc.dataset.bsTheme = dark ? 'dark' : 'light';
+    if (body) { body.classList.toggle('nightMode', dark); body.classList.toggle('night_mode', dark); }
+})(%s);"""
+
+
+def _home_forced() -> bool:
+    """"Always dark" is on and Anki is light: the home screens are drawn dark by us."""
     try:
-        from aqt.deckbrowser import DeckBrowser
         from aqt.theme import theme_manager
-        from aqt import colors
-        if not isinstance(context, DeckBrowser):
+        return _home_always_dark() and not theme_manager.night_mode
+    except Exception:
+        return False
+
+
+def _web_backdrop(web, forced: bool) -> None:
+    """The web view's own color (what shows before its page paints). Only touched when
+    forced, or to undo an earlier forced one; otherwise it's Anki's."""
+    if not forced and not getattr(web, "_hm_forced", False):
+        return
+    from aqt.theme import theme_manager
+    from aqt import colors
+    web.page().setBackgroundColor(QColor(colors.CANVAS["dark"]) if forced else theme_manager.qcolor(colors.CANVAS))
+    web._hm_forced = forced
+
+
+def _home_dark_page(web_content, context):
+    """With "Always dark" on and Anki light: the deck list, the overview and their top and
+    bottom bars get Anki's own dark-mode marks (so its CSS and ours turn dark) before
+    anything paints, and a dark backdrop. The review screen and its bottom bar stay light."""
+    try:
+        from aqt.deckbrowser import DeckBrowser, DeckBrowserBottomBar
+        from aqt.overview import Overview, OverviewBottomBar
+        from aqt.reviewer import Reviewer, ReviewerBottomBar
+        from aqt.toolbar import TopToolbar
+        if isinstance(context, (DeckBrowser, Overview)):
+            web, home = mw.web, True
+        elif isinstance(context, Reviewer):
+            web, home = mw.web, False
+        elif isinstance(context, (DeckBrowserBottomBar, OverviewBottomBar)):
+            web, home = mw.bottomWeb, True
+        elif isinstance(context, ReviewerBottomBar):
+            web, home = mw.bottomWeb, False
+        elif isinstance(context, TopToolbar):
+            web, home = mw.toolbar.web, mw.state in _HOME_SCREENS
+        else:
             return
-        forced = _home_always_dark() and not theme_manager.night_mode
-        mw.deckBrowser.web.page().setBackgroundColor(
-            QColor(colors.CANVAS["dark"]) if forced else theme_manager.qcolor(colors.CANVAS))
+        forced = home and _home_forced()
+        _web_backdrop(web, forced)
         if forced:
             web_content.head += ("<script>document.documentElement.classList.add('night-mode');"
                                  "document.documentElement.dataset.bsTheme = 'dark';</script>")
@@ -9045,9 +9548,41 @@ def _home_dark_page(web_content, context):
         _log_exc()
 
 
+def _home_dark_marks(web, forced: bool) -> None:
+    """Switch a page that's already up between our dark and Anki's own theme."""
+    if not forced and not getattr(web, "_hm_forced", False):
+        return
+    from aqt.theme import theme_manager
+    _web_backdrop(web, forced)
+    web.eval(_DARK_MARKS_JS % ("true" if forced or theme_manager.night_mode else "false"))
+
+
+def _home_dark_toolbar(new_state, old_state):
+    """The top bar isn't redrawn with each screen: dark on the home screens, light in review."""
+    try:
+        _home_dark_marks(mw.toolbar.web, new_state in _HOME_SCREENS and _home_forced())
+    except Exception:
+        _log_exc()
+
+
+def _home_dark_congrats(web):
+    """The overview's "Congratulations" page is one Anki loads itself (no set-content hook)."""
+    try:
+        if web is mw.web and mw.state == "overview" and _home_forced():
+            _home_dark_marks(web, True)
+    except Exception:
+        _log_exc()
+
+
 try: gui_hooks.webview_will_set_content.remove(_home_dark_page)
 except Exception: pass
 gui_hooks.webview_will_set_content.append(_home_dark_page)
+try: gui_hooks.state_did_change.remove(_home_dark_toolbar)
+except Exception: pass
+gui_hooks.state_did_change.append(_home_dark_toolbar)
+try: gui_hooks.webview_did_inject_style_into_page.remove(_home_dark_congrats)
+except Exception: pass
+gui_hooks.webview_did_inject_style_into_page.append(_home_dark_congrats)
 
 
 def _note_return_home(new_state, old_state):
@@ -9061,6 +9596,11 @@ except Exception: pass
 gui_hooks.state_will_change.append(_note_return_home)
 
 def render_overview(overview, content):
+    with _HomeDark():
+        _render_overview(overview, content)
+
+
+def _render_overview(overview, content):
     """Render heatmap on the overview screen (before studying a deck)."""
     cfg = get_config()
 

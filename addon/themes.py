@@ -13,6 +13,8 @@ and coming back to My colors loses nothing.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 # palette field: config key
 FIELDS = {
     "base": "base_color",
@@ -30,6 +32,7 @@ FIELDS = {
     "learn": "pill_learn_color",
     "due": "pill_due_color",
     "filtered": "filtered_deck_color",
+    "shade": "forecast_shade_color",
 }
 # "empty" is per mode in the config already: light → empty_color, dark → empty_color_night
 THEME_KEYS = tuple(FIELDS.values()) + ("empty_color", "empty_color_night")
@@ -107,6 +110,35 @@ THEMES = {
         "dark":  _p("#d4d4d4", "#ff6369", "#444444", "#2a2a2a", "#d4d4d4", "#f0b45a", "#9a9a9a", "#6e6e6e", "#555555", "#9a9a9a", "#b5b5b5", "#b5b5b5", "#7fb2f0", "#ff7b7b", "#f0c75e", "#9cc4c4")},
 }
 
+
+# Forecast shading (future days shaded by predicted cards): (light, dark). Taken from a
+# color already in the theme, far in hue from its day color and from the Time and New
+# views' colors, so forecast days read as their own thing; Nā Pali and Ocean picked by hand.
+SHADE = {
+    "highland_mist": ("#8a6f9e", "#b8a0cc"),
+    "forest_trail":  ("#1d86a8", "#5cc6e8"),
+    "rolling_hills": ("#1f7fd6", "#66b8ff"),
+    "starlight":     ("#5a6b9e", "#9fb0e0"),
+    "na_pali":       ("#d0694c", "#f4977a"),
+    "wanaka_dusk":   ("#3f8a5a", "#8fd0a0"),
+    "classic":       ("#20b2aa", "#20b2aa"),
+    "github":        ("#8250df", "#bc8cff"),
+    "ocean":         ("#ab47bc", "#ce93d8"),
+    "catppuccin":    ("#40a02b", "#a6e3a1"),
+    "nord":          ("#b48ead", "#b48ead"),
+    "dracula":       ("#036a96", "#8be9fd"),
+    "tokyo_night":   ("#587539", "#9ece6a"),
+    "gruvbox":       ("#1a6fa8", "#7fb8d8"),
+    "rose_pine":     ("#907aa9", "#c4a7e7"),
+    "everforest":    ("#3a94c5", "#6fc3d8"),
+    "solarized":     ("#d33682", "#d33682"),
+    "sakura":        ("#5b9a68", "#8fcf9b"),
+    "graphite":      ("#7a9e9e", "#9cc4c4"),
+}
+for _k, (_light, _dark) in SHADE.items():
+    THEMES[_k]["light"]["shade"] = _light
+    THEMES[_k]["dark"]["shade"] = _dark
+
 CUSTOM = "custom"
 
 
@@ -169,6 +201,7 @@ def readable_text(hex_color: str) -> str:
 # differ in lightness, not only in how see-through they are. Cells are placed by
 # rank (glow_ranker), so the whole range gets used whatever the numbers are.
 
+@lru_cache(maxsize=8192)       # the heatmap asks for the same few colors for every cell
 def _mix_hex(a, b, t):
     try:
         pa = [int(a.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)]
@@ -188,15 +221,21 @@ GLOW_CONTRAST = 0.75  # the Glow Contrast setting's default
 def glow_stops(base, night, contrast=GLOW_CONTRAST):
     """[low, base, high] for the scale. contrast (0..1) sets how far the two ends
     move away from the base color."""
-    c = max(0.0, min(1.0, float(contrast)))
+    return list(_glow_stops(base, bool(night), float(contrast)))
+
+
+@lru_cache(maxsize=256)
+def _glow_stops(base, night, contrast):
+    c = max(0.0, min(1.0, contrast))
     if night:
-        return [_mix_hex(base, "#101214", 0.40 + 0.50 * c), base, _mix_hex(base, "#ffffff", 0.20 + 0.50 * c)]
-    return [_mix_hex(base, "#ffffff", 0.46 + 0.48 * c), base, _mix_hex(base, "#000000", 0.15 + 0.40 * c)]
+        return (_mix_hex(base, "#101214", 0.40 + 0.50 * c), base, _mix_hex(base, "#ffffff", 0.20 + 0.50 * c))
+    return (_mix_hex(base, "#ffffff", 0.46 + 0.48 * c), base, _mix_hex(base, "#000000", 0.15 + 0.40 * c))
 
 
+@lru_cache(maxsize=8192)
 def glow(base, t, night, contrast=GLOW_CONTRAST):
     """The scale's color at t (0 = quietest, 1 = busiest)."""
-    lo, mid, hi = glow_stops(base, night, contrast)
+    lo, mid, hi = _glow_stops(base, bool(night), float(contrast))
     t = GLOW_FLOOR + (1 - GLOW_FLOOR) * max(0.0, min(1.0, t))
     if t <= GLOW_MID:
         return _mix_hex(lo, mid, t / GLOW_MID)

@@ -84,7 +84,13 @@ The only thing that ever leaves your computer is feedback you choose to send fro
 
 Found a bug or have an idea? Send it from **Settings → Feedback**, no account needed. I read every message.
 
-## What's new in 1.9.5
+## What's new in 1.9.6
+
+- Forecast shading: in Volume view, future days get darker the more cards are due. Turn it off in **Settings → General**.
+- Smoother reviews: cards show up right away, before Live Stats updates.
+- Bug fixes: Anki's memory use no longer grows on the deck screen.
+
+In 1.9.5:
 
 - Heatmap improvements: more heatmap display settings, like separating months, and you can scroll back through more of your history.
 - Performance improvements.
