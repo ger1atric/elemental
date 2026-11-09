@@ -36,7 +36,7 @@ except ImportError:
         QPolygonF = None
 
 ADDON_NAME = "Elemental"
-VERSION = "1.9.6"
+VERSION = "1.9.5"
 
 _home_dark_now = False      # while the home page draws with "Always dark" on (_HomeDark)
 
@@ -1184,6 +1184,65 @@ from . import stats_view
 from . import moments
 from . import help_text
 from .icons import icon, CHEVRON_MASK
+
+
+# ──────────────────────────────────────────────────────────────
+# Updates on Windows
+# ──────────────────────────────────────────────────────────────
+# To update an add-on, Anki moves its user_files folder aside, then deletes the rest.
+# Windows refuses either while a file inside is open, and the update fails ("Access is
+# denied") every time Anki starts. Nothing here keeps a file open, but a write or the
+# daily model fit can have one open for a moment: before Anki moves or deletes this
+# add-on's folder, finish the queued writes, and if Windows still refuses, wait and try
+# again for a few seconds.
+UPDATE_RETRY_S = 10
+
+
+def _release_files():
+    try:
+        from . import focus_log
+        focus_log._flush()
+    except Exception:
+        pass
+    review_pill.flush_log()
+
+
+def _patient(fn, module, *args, **kwargs):
+    deadline = time.time() + UPDATE_RETRY_S
+    _release_files()
+    while True:
+        try:
+            return fn(module, *args, **kwargs)
+        except OSError as e:
+            busy = isinstance(e, PermissionError) or getattr(e, "winerror", None) in (5, 32)
+            if not busy or time.time() >= deadline:
+                raise
+            time.sleep(0.5)
+
+
+def _guard_updates():
+    am = getattr(mw, "addonManager", None)
+    if am is None:
+        return
+    me = am.addonFromModule(__name__)
+    for name in ("backupUserFiles", "deleteAddon"):
+        orig = getattr(am, name, None)
+        if orig is None or getattr(orig, "_elemental", False):
+            continue
+
+        def guarded(module, *args, _orig=orig, **kwargs):
+            if module != me:
+                return _orig(module, *args, **kwargs)
+            return _patient(_orig, module, *args, **kwargs)
+
+        guarded._elemental = True
+        setattr(am, name, guarded)
+
+
+try:
+    _guard_updates()
+except Exception:
+    print(traceback.format_exc())
 
 # FSRS Helper Functions
 # FSRS-5 default weights for reference

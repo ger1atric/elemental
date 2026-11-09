@@ -7,13 +7,8 @@ __init__.py to match.
 from __future__ import annotations
 
 RELEASES = [
-    {"version": '1.9.6', "date": 'November 9, 2026', "notes": [
-        ('Heatmap improvements', "Visualize your future review load directly on the heatmap: in Volume view, upcoming days get darker the more cards are due. Turn it on in Settings → General."),
-        ('Performance improvements', ""),
-        ('Bug fixes', ""),
-    ]},
-    {"version": '1.9.5', "date": 'November 8, 2026', "notes": [
-        ('Heatmap improvements', "Adds more heatmap display settings, like separating months, and lets you scroll back through more of your history."),
+    {"version": '1.9.5', "date": 'November 9, 2026', "notes": [
+        ('Heatmap improvements', "Visualize your future review load directly on the heatmap (turn it on in Settings → General), separate months, and scroll back through more of your history."),
         ('Performance improvements', ""),
         ('Bug fixes', ""),
     ]},

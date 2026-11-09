@@ -84,15 +84,9 @@ The only thing that ever leaves your computer is feedback you choose to send fro
 
 Found a bug or have an idea? Send it from **Settings → Feedback**, no account needed. I read every message.
 
-## What's new in 1.9.6
+## What's new in 1.9.5
 
-- Heatmap improvements: visualize your future review load directly on the heatmap. In Volume view, upcoming days get darker the more cards are due. Turn it on in **Settings → General**.
-- Performance improvements.
-- Bug fixes.
-
-In 1.9.5:
-
-- Heatmap improvements: more heatmap display settings, like separating months, and you can scroll back through more of your history.
+- Heatmap improvements: visualize your future review load directly on the heatmap (turn it on in **Settings → General**), separate months, and scroll back through more of your history.
 - Performance improvements.
 - Bug fixes.
 

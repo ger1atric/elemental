@@ -745,6 +745,15 @@ def ring_log(line: str) -> None:
         pass
 
 
+def flush_log() -> None:
+    """Wait for log lines still being written (Anki is about to move user_files)."""
+    if _log_writer is not None:
+        try:
+            _log_writer.submit(lambda: None).result(timeout=3)
+        except Exception:
+            pass
+
+
 def _write_ring_log(stamped: str) -> None:
     path = os.path.join(os.path.dirname(__file__), "user_files", "ring_debug.log")
     try:
